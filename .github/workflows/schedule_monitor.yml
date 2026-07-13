@@ -1,0 +1,48 @@
+name: Price Monitor Cron
+
+on:
+  schedule:
+    # Runs at minute 0 past every hour
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache Patchright Browsers
+        uses: actions/cache@v4
+        id: patchright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-patchright-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-patchright-
+
+      - name: Install Chromium for StealthyFetcher
+        run: python -m patchright install chromium --with-deps
+        if: steps.patchright-cache.outputs.cache-hit != 'true'
+
+      - name: Run price monitor
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          python -c "
+          import asyncio
+          from price_monitor import run_monitor
+          asyncio.run(run_monitor())
+          "

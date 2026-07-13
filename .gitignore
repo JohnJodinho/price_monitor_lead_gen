@@ -1,0 +1,10 @@
+.env
+main.py
+tests
+venv
+main_products.json
+migration_scrape_runs.sql
+production_backend_guide_v2.md
+production_backend_guide_v3.md
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,67 @@
+Project "Product Monitor & Lead Tracker" {
+  database_type: 'PostgreSQL'
+}
+
+Table products {
+  id uuid [primary key]
+  created_at timestamptz [default: `now()`, not null]
+  updated_at timestamptz [default: `now()`, not null]
+  name varchar(500) [not null]
+  url text [unique, not null]
+  target_price decimal(10,2) [null]
+  is_active boolean [default: true, not null]
+}
+
+Table price_history {
+  id uuid [primary key]
+  created_at timestamptz [default: `now()`, not null]
+  updated_at timestamptz [default: `now()`, not null]
+  product_id uuid [not null, ref: > products.id]
+  price decimal(10,2) [not null]
+  currency varchar(10) [default: 'USD', not null]
+  tier_used integer [not null]
+}
+
+Table price_alerts {
+  id uuid [primary key]
+  created_at timestamptz [default: `now()`, not null]
+  updated_at timestamptz [default: `now()`, not null]
+  product_id uuid [not null, ref: > products.id]
+  alert_type varchar(20) [not null]
+  price_at_alert decimal(10,2) [not null]
+  target_price decimal(10,2) [null]
+  previous_price decimal(10,2) [null]
+  pct_change decimal(5,2) [null]
+  acknowledged boolean [default: false, not null]
+
+  Note: '''
+    chk_valid_alert_data:
+    (alert_type = 'threshold' AND target_price IS NOT NULL AND previous_price IS NULL AND pct_change IS NULL) OR
+    (alert_type = 'change' AND previous_price IS NOT NULL AND pct_change IS NOT NULL AND target_price IS NULL)
+  '''
+}
+
+Table lead_targets {
+  id uuid [primary key]
+  created_at timestamptz [default: `now()`, not null]
+  updated_at timestamptz [default: `now()`, not null]
+  url text [unique, not null]
+  category varchar(200) [null]
+  is_active boolean [default: true, not null]
+}
+
+Table leads {
+  id uuid [primary key]
+  created_at timestamptz [default: `now()`, not null]
+  updated_at timestamptz [default: `now()`, not null]
+  target_id uuid [not null, ref: > lead_targets.id]
+  email varchar(500) [null]
+  phone varchar(100) [null]
+  company_name varchar(500) [null]
+  contact_name varchar(500) [null]
+  source_url text [null]
+
+  indexes {
+    (target_id, email) [unique, name: 'uq_lead_target_email']
+  }
+}
