@@ -19,6 +19,7 @@ from sqlalchemy import (
     Enum,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import JSONB
 
 from db import Base
 
@@ -127,17 +128,17 @@ class Lead(CustomBase):
 
     __tablename__ = "leads"
     __table_args__ = (
-        UniqueConstraint("target_id", "email", name="uq_lead_target_email"),
+        UniqueConstraint("target_id", "source_url", name="uq_lead_target_url"),
     )
 
     target_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("lead_targets.id", ondelete="CASCADE"), index=True
     )
-    email: Mapped[str | None] = mapped_column(String(500))
-    phone: Mapped[str | None] = mapped_column(String(100))
     company_name: Mapped[str | None] = mapped_column(String(500))
-    contact_name: Mapped[str | None] = mapped_column(String(500))
     source_url: Mapped[str | None] = mapped_column(Text)
+    
+    contacts: Mapped[dict] = mapped_column(JSONB, default=dict)
+    socials: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     target: Mapped["LeadTarget"] = relationship(back_populates="leads")
 

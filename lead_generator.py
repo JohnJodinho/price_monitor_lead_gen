@@ -22,6 +22,10 @@ from db import AsyncSessionLocal, create_tables
 from models import LeadTarget, Lead, ScrapeRun, RunJobType, RunStatus
 from engines.tier1 import fetch_tier1
 from engines.tier2 import fetch_tier2
+from urllib.parse import urlparse
+from engines.homepage_crawler import crawl_homepage
+from engines.escalation import needs_tier2
+from schemas import ContactsSchema, SocialsSchema
 
 from scrapling.engines.toolbelt.custom import Response
 
@@ -138,74 +142,127 @@ async def _upsert_targets(db: AsyncSession) -> None:
         raise
 
 
-def _extract_contacts(text: str) -> Dict[str, List[str]]:
+def _extract_contacts(response: Response, target_domain: str) -> tuple[Dict, Dict]:
     """
-    Extract unique emails and phones from raw text.
+    Extract contact methods and social links from the page using HTML/CSS parsing and regex fallback.
 
     Args:
-        text (str): The combined raw text and HTML of the page.
+        response (Response): The Scrapling response object.
+        target_domain (str): The domain of the target to match emails against.
 
     Returns:
-        Dict[str, List[str]]: A dictionary with 'emails' and 'phones' lists.
+        tuple[Dict, Dict]: (contacts_dict, socials_dict) validated by Pydantic.
     """
-    emails: List[str] = [
-        e
-        for e in set(EMAIL_PATTERN.findall(text))
-        if not any(fp in e for fp in EMAIL_BLOCKLIST)
-    ]
-    phones: List[str] = list(set(PHONE_PATTERN.findall(text)))
-    return {"emails": emails, "phones": phones}
+    tels = response.css('a[href^="tel:"]::attr(href)').getall()
+    mailtos = response.css('a[href^="mailto:"]::attr(href)').getall()
+    all_links = response.css('a::attr(href)').getall()
+    
+    # Text fallback for emails without mailto
+    all_text = ""
+    try:
+        all_text = str(response.get_all_text(strip=True, ignore_tags=("script", "style", "noscript")))
+    except Exception:
+        pass
+
+    phone_list = [t.replace('tel:', '').strip() for t in tels]
+    
+    email_list = []
+    email_with_domain_list = []
+
+    for m in mailtos:
+        clean_email = m.replace('mailto:', '').split('?')[0].strip()
+        if not clean_email:
+            continue
+        if target_domain in clean_email.split('@')[-1]:
+            email_with_domain_list.append(clean_email)
+        else:
+            email_list.append(clean_email)
+
+    raw_emails = set(EMAIL_PATTERN.findall(all_text))
+    for e in raw_emails:
+        if not any(fp in e for fp in EMAIL_BLOCKLIST):
+            if target_domain in e.split('@')[-1]:
+                email_with_domain_list.append(e)
+
+    socials = {
+        "X(twitter)": [],
+        "Facebook": [],
+        "Whatsapp": [],
+        "Instagram": [],
+        "linkedIn": []
+    }
+
+    for link in all_links:
+        l = link.lower()
+        if "twitter.com" in l or "x.com" in l:
+            socials["X(twitter)"].append(link)
+        elif "facebook.com" in l:
+            socials["Facebook"].append(link)
+        elif "wa.me" in l or "api.whatsapp.com" in l:
+            socials["Whatsapp"].append(link)
+        elif "instagram.com" in l:
+            socials["Instagram"].append(link)
+        elif "linkedin.com" in l:
+            socials["linkedIn"].append(link)
+
+    c_schema = ContactsSchema(
+        phone=list(set(phone_list)),
+        email=list(set(email_list)),
+        emailWithDomain=list(set(email_with_domain_list))
+    )
+    
+    s_schema = SocialsSchema(
+        **{k: list(set(v)) for k, v in socials.items()}
+    )
+
+    return c_schema.model_dump(by_alias=True), s_schema.model_dump(by_alias=True)
 
 
 async def _save_leads(
     db: AsyncSession,
     target: LeadTarget,
-    contacts: Dict[str, List[str]],
+    contacts: dict,
+    socials: dict,
     source_url: str,
     company_name: Optional[str] = None,
 ) -> int:
     """
-    Upsert leads into the DB.
-    Uses INSERT ... ON CONFLICT DO NOTHING to gracefully handle duplicates.
-
-    Note: created_at is set automatically by server_default=func.now() on Base.
+    Upsert leads into the DB using JSONB arrays.
+    Uses INSERT ... ON CONFLICT DO UPDATE to merge new JSON arrays for the page.
 
     Args:
         db (AsyncSession): The active database session.
         target (LeadTarget): The target from which leads were extracted.
-        contacts (Dict[str, List[str]]): Extracted emails and phones.
+        contacts (dict): Validated contacts dictionary.
+        socials (dict): Validated socials dictionary.
         source_url (str): The URL where the leads were found.
         company_name (Optional[str]): The extracted company name (e.g. from <title>).
 
     Returns:
-        int: Count of newly inserted rows.
-
-    Raises:
-        Exception: If the database operations fail, rolls back the transaction and raises.
+        int: Count of newly inserted rows (0 or 1).
     """
     try:
-        inserted: int = 0
-        first_phone: Optional[str] = (
-            contacts["phones"][0] if contacts["phones"] else None
-        )
-
-        for email in contacts.get("emails", []):
-            stmt = (
-                pg_insert(Lead)
-                .values(
-                    target_id=target.id,
-                    email=email,
-                    phone=first_phone,
-                    company_name=company_name,
-                    source_url=source_url,
-                )
-                .on_conflict_do_nothing(index_elements=["target_id", "email"])
+        stmt = (
+            pg_insert(Lead)
+            .values(
+                target_id=target.id,
+                source_url=source_url,
+                company_name=company_name,
+                contacts=contacts,
+                socials=socials,
             )
-            result = await db.execute(stmt)
-            inserted += result.rowcount
-
+            .on_conflict_do_update(
+                index_elements=["target_id", "source_url"],
+                set_={
+                    "contacts": contacts,
+                    "socials": socials,
+                    "company_name": company_name,
+                }
+            )
+        )
+        result = await db.execute(stmt)
         await db.commit()
-        return inserted
+        return result.rowcount
     except Exception as e:
         logger.error(
             f"[LeadGen] Failed to save leads for target {target.url}", exc_info=True
@@ -233,6 +290,12 @@ async def scrape_target(target: LeadTarget) -> bool:
     """
     url: str = target.url
 
+    if urlparse(url).path in ("", "/"):
+        # ── Homepage path: delegate entirely to Spider engine ──
+        return await crawl_homepage(url=url, target=target)
+
+    # ── Existing dedicated-page path: unchanged below ──
+
     # Network operations inside Tier 1 handle their own try/excepts and return None on failure
     response: Optional[Response] = fetch_tier1(url)
 
@@ -247,12 +310,7 @@ async def scrape_target(target: LeadTarget) -> bool:
         )
         text_preview = ""
 
-    bot_signals: List[str] = ["captcha", "access denied", "cloudflare", "just a moment"]
-    needs_escalation: bool = (
-        response is None
-        or len(text_preview) < 100
-        or any(sig in text_preview for sig in bot_signals)
-    )
+    needs_escalation = needs_tier2(text_preview, response_is_none=(response is None))
 
     if needs_escalation:
         logger.info(f"[LeadGen] Escalating to Tier 2 for {url}")
@@ -263,24 +321,17 @@ async def scrape_target(target: LeadTarget) -> bool:
         logger.error(f"[LeadGen] All tiers failed for {url}")
         return False
 
-    # Use get_all_text() for visible text + html_content for mailto: links
+    target_domain = urlparse(target.url).netloc.replace("www.", "")
     try:
-        all_text: str = str(
-            response.get_all_text(
-                strip=True, ignore_tags=("script", "style", "noscript")
-            )
-        )
-        html: str = str(response.html_content)
-        combined_text: str = all_text + "\n" + html
-        contacts: Dict[str, List[str]] = _extract_contacts(combined_text)
+        contacts, socials = _extract_contacts(response, target_domain=target_domain)
     except Exception as e:
         logger.error(
-            f"[LeadGen] Failed to extract text/HTML from response for {url}",
+            f"[LeadGen] Failed to extract contacts/socials from response for {url}",
             exc_info=True,
         )
         return False
 
-    if not contacts["emails"] and not contacts["phones"]:
+    if not contacts["email"] and not contacts["emailWithDomain"] and not contacts["phone"]:
         logger.info(f"[LeadGen] No contacts found at {url}")
         return True
 
@@ -299,7 +350,7 @@ async def scrape_target(target: LeadTarget) -> bool:
     try:
         async with AsyncSessionLocal() as save_db:
             count: int = await _save_leads(
-                save_db, target, contacts, source_url=url, company_name=company_name
+                save_db, target, contacts, socials, source_url=url, company_name=company_name
             )
         logger.info(f"[LeadGen] {url} -> {count} new leads saved")
         return True

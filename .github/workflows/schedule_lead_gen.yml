@@ -40,6 +40,14 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HOMEPAGE_MAX_PAGES: ${{ vars.HOMEPAGE_MAX_PAGES }}
+          HOMEPAGE_T1_TIMEOUT: ${{ vars.HOMEPAGE_T1_TIMEOUT }}
+          HOMEPAGE_T2_TIMEOUT: ${{ vars.HOMEPAGE_T2_TIMEOUT }}
+          HOMEPAGE_CONCURRENT_REQUESTS: ${{ vars.HOMEPAGE_CONCURRENT_REQUESTS }}
+          HOMEPAGE_CONCURRENT_REQUESTS_PER_DOMAIN: ${{ vars.HOMEPAGE_CONCURRENT_REQUESTS_PER_DOMAIN }}
+          HOMEPAGE_DOWNLOAD_DELAY: ${{ vars.HOMEPAGE_DOWNLOAD_DELAY }}
+          HOMEPAGE_ROBOTS_TXT_OBEY: ${{ vars.HOMEPAGE_ROBOTS_TXT_OBEY }}
+          HOMEPAGE_CONTACT_KEYWORDS: ${{ vars.HOMEPAGE_CONTACT_KEYWORDS }}
         run: |
           python -c "
           import asyncio

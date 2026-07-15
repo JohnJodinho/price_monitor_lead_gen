@@ -8,3 +8,4 @@ production_backend_guide_v2.md
 production_backend_guide_v3.md
 __pycache__/
 .pytest_cache/
+spiders_architecture

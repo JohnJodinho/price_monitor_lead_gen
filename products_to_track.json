@@ -1,36 +1,36 @@
 [
     {
-        "name": "product 1",
+        "name": "Oxylabs Sandbox Product 1",
         "url": "https://sandbox.oxylabs.io/products/1",
         "target_price": 500.0
     },
     {
-        "name": "product 2",
+        "name": "A Light in the Attic",
         "url": "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html",
         "target_price": 150.0
     },
     {
-        "name": "product 3",
+        "name": "Sapiens: A Brief History of Humankind",
         "url": "https://books.toscrape.com/catalogue/sapiens-a-brief-history-of-humankind_996/index.html",
         "target_price": 60.3
     },
     {
-        "name": "product 4",
+        "name": "Mercedes-Benz W123 280E (1955)",
         "url": "https://webscraper.io/test-sites/product/mercedes-benz-w123-280e-1955-c001",
         "target_price": 20023.0
     },
     {
-        "name": "product 5",
+        "name": "Toyota AE86 Sprinter Trueno (1962)",
         "url": "https://webscraper.io/test-sites/product/toyota-ae86-sprinter-trueno-1962-c062",
         "target_price": 17614.0
     },
     {
-        "name": "product 6",
+        "name": "The Requiem Red",
         "url": "https://books.toscrape.com/catalogue/the-requiem-red_995/index.html",
         "target_price": 800.0
     },
     {
-        "name": "product 7",
+        "name": "Oxylabs Sandbox Product 7",
         "url": "https://sandbox.oxylabs.io/products/7",
         "target_price": 400.0
     }
