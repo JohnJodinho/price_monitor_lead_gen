@@ -2,8 +2,9 @@ name: Lead Gen Cron
 
 on:
   schedule:
-    # Runs right before the Real Estate block begins
-    - cron: "30 5,11,17,23 * * *"
+    # Mid-block placement: ~1.5hr clear of Real Estate on both sides,
+    # and offset 30min from Price Monitor's hourly runs either side of it.
+    - cron: "30 4,10,16,22 * * *"
   workflow_dispatch:
 
 jobs:

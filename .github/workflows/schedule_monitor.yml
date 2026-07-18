@@ -2,7 +2,8 @@ name: Price Monitor Cron
 
 on:
   schedule:
-    # Runs hourly, avoiding the 0,1,2 and 6,7,8 blocks used by Real Estate
+    # Hourly within the 3hr gaps between Real Estate's runs (which occupy
+    # 00-03, 06-09, 12-15, 18-21). Highest-frequency job, per volatile market.
     - cron: "0 3,4,5,9,10,11,15,16,17,21,22,23 * * *"
   workflow_dispatch:
 
