@@ -30,6 +30,7 @@ from engines.tier1 import fetch_tier1
 from engines.tier2 import fetch_tier2
 from engines.tier3 import extract_price_tier3
 import json
+from observability import run_watchdog, RunLogger
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +314,7 @@ async def scrape_product(product: Product) -> bool:
 
     if response is None:
         logger.error(f"[Monitor] All network tiers failed for {url}")
-        return False
+        return False, {"error": "All network tiers failed"}
 
     # --- CSS extraction (fast, zero LLM cost) ---
     # Try a cascade of common price selectors before calling the LLM.
@@ -371,7 +372,7 @@ async def scrape_product(product: Product) -> bool:
 
     if price is None:
         logger.warning(f"[Monitor] Could not extract price for {url}")
-        return False
+        return False, {"error": "Could not extract price"}
 
     logger.info(f"[Monitor] {product.name}: {currency} {price:.2f} (Tier {tier_used})")
 
@@ -381,10 +382,10 @@ async def scrape_product(product: Product) -> bool:
     try:
         async with AsyncSessionLocal() as save_db:
             await _save_price(save_db, product, price, currency, tier_used)
-        return True
-    except Exception:
+        return True, {"price": price, "currency": currency, "tier": tier_used}
+    except Exception as e:
         # Error is logged inside _save_price
-        return False
+        return False, {"error": str(e)}
 
 
 async def run_monitor() -> None:
@@ -413,16 +414,20 @@ async def run_monitor() -> None:
     run_id = None
 
     async with AsyncSessionLocal() as db:
+        await run_watchdog(db, RunJobType.PRICE_MONITOR.value, max_duration_hours=4)
+        
         # Create run record
         run_record = ScrapeRun(
             job_type=RunJobType.PRICE_MONITOR,
             status=RunStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
+            platform="ecommerce"
         )
         db.add(run_record)
         await db.commit()
         await db.refresh(run_record)
         run_id = run_record.id
+        started_at = run_record.started_at
 
         try:
             await _upsert_products(db)
@@ -451,55 +456,68 @@ async def run_monitor() -> None:
             return
     # Session is now closed; products are detached (column values still accessible).
 
-    # Phase 2: scrape each product with its own isolated write session.
-    # scrape_product() opens AsyncSessionLocal internally for _save_price, so a
-    # rollback in one product cannot expire objects used by the next.
     items_attempted = len(products)
     items_succeeded = 0
     items_failed = 0
     error_summary = None
 
-    for product in products:
-        product_url: str = product.url  # capture before any potential expiry
-        try:
-            success = await scrape_product(product)
-            if success:
-                items_succeeded += 1
-            else:
+    file_logger = RunLogger(
+        job_type=RunJobType.PRICE_MONITOR.value,
+        platform="ecommerce",
+        run_id=str(run_id),
+        started_at=started_at
+    )
+
+    try:
+        for product in products:
+            product_url: str = product.url
+            try:
+                success, details = await scrape_product(product)
+                if success:
+                    items_succeeded += 1
+                    file_logger.log_item({"url": product_url, "status": "success", **details})
+                else:
+                    items_failed += 1
+                    file_logger.log_item({"url": product_url, "status": "failed", **details})
+            except Exception as e:
+                logger.error(
+                    f"[Monitor] Unhandled error processing product {product_url}",
+                    exc_info=True,
+                )
                 items_failed += 1
-        except Exception as e:
-            logger.error(
-                f"[Monitor] Unhandled error processing product {product_url}",
-                exc_info=True,
-            )
-            items_failed += 1
-            if not error_summary:
-                error_summary = str(e)[:500]
+                if not error_summary:
+                    error_summary = str(e)[:500]
+                file_logger.log_item({"url": product_url, "status": "error", "error": str(e)})
 
-    # Phase 3: Update run record status
-    async with AsyncSessionLocal() as db:
-        status = (
-            RunStatus.SUCCESS
-            if items_failed < items_attempted or items_attempted == 0
-            else RunStatus.FAILED
-        )
-        if error_summary and status == RunStatus.SUCCESS:
+    except Exception as e:
+        logger.error(f"[Monitor] Fatal loop error: {e}", exc_info=True)
+        error_summary = f"Fatal error: {e}"[:500]
+        
+    finally:
+        file_logger.close()
+        
+        # Phase 3: Update run record status
+        async with AsyncSessionLocal() as db:
             status = (
-                RunStatus.FAILED
-            )  # If there was a fatal unhandled error, mark failed
-
-        await db.execute(
-            update(ScrapeRun)
-            .where(ScrapeRun.id == run_id)
-            .values(
-                status=status,
-                finished_at=datetime.now(timezone.utc),
-                items_attempted=items_attempted,
-                items_succeeded=items_succeeded,
-                items_failed=items_failed,
-                error_summary=error_summary,
+                RunStatus.SUCCESS
+                if items_failed < items_attempted or items_attempted == 0
+                else RunStatus.FAILED
             )
-        )
-        await db.commit()
+            if error_summary and status == RunStatus.SUCCESS:
+                status = RunStatus.FAILED
 
-    logger.info("[Monitor] Price monitor run complete")
+            await db.execute(
+                update(ScrapeRun)
+                .where(ScrapeRun.id == run_id)
+                .values(
+                    status=status,
+                    finished_at=datetime.now(timezone.utc),
+                    items_attempted=items_attempted,
+                    items_succeeded=items_succeeded,
+                    items_failed=items_failed,
+                    error_summary=error_summary,
+                )
+            )
+            await db.commit()
+
+        logger.info("[Monitor] Price monitor run complete")

@@ -9,3 +9,9 @@ production_backend_guide_v3.md
 __pycache__/
 .pytest_cache/
 spiders_architecture
+docs_research
+html_tags2.txt
+html_tags.txt
+main_targets.json
+migration_real_estate.sql
+migration_leads.sql

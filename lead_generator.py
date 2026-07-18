@@ -28,6 +28,7 @@ from engines.escalation import needs_tier2
 from schemas import ContactsSchema, SocialsSchema
 
 from scrapling.engines.toolbelt.custom import Response
+from observability import run_watchdog, RunLogger
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +293,8 @@ async def scrape_target(target: LeadTarget) -> bool:
 
     if urlparse(url).path in ("", "/"):
         # ── Homepage path: delegate entirely to Spider engine ──
-        return await crawl_homepage(url=url, target=target)
+        res = await crawl_homepage(url=url, target=target)
+        return res, {"method": "spider"}
 
     # ── Existing dedicated-page path: unchanged below ──
 
@@ -319,7 +321,7 @@ async def scrape_target(target: LeadTarget) -> bool:
 
     if response is None:
         logger.error(f"[LeadGen] All tiers failed for {url}")
-        return False
+        return False, {"error": "All tiers failed"}
 
     target_domain = urlparse(target.url).netloc.replace("www.", "")
     try:
@@ -329,11 +331,11 @@ async def scrape_target(target: LeadTarget) -> bool:
             f"[LeadGen] Failed to extract contacts/socials from response for {url}",
             exc_info=True,
         )
-        return False
+        return False, {"error": "Failed to extract contacts/socials"}
 
     if not contacts["email"] and not contacts["emailWithDomain"] and not contacts["phone"]:
         logger.info(f"[LeadGen] No contacts found at {url}")
-        return True
+        return True, {"leads_saved": 0, "status": "no contacts found"}
 
     # Attempt to pull company name from <title>
     company_name: Optional[str] = None
@@ -353,10 +355,10 @@ async def scrape_target(target: LeadTarget) -> bool:
                 save_db, target, contacts, socials, source_url=url, company_name=company_name
             )
         logger.info(f"[LeadGen] {url} -> {count} new leads saved")
-        return True
-    except Exception:
+        return True, {"leads_saved": count, "company": company_name}
+    except Exception as e:
         # Error is logged inside _save_leads
-        return False
+        return False, {"error": str(e)}
 
 
 async def run_lead_gen() -> None:
@@ -385,16 +387,20 @@ async def run_lead_gen() -> None:
     run_id = None
 
     async with AsyncSessionLocal() as db:
+        await run_watchdog(db, RunJobType.LEAD_GEN.value, max_duration_hours=4)
+        
         # Create run record
         run_record = ScrapeRun(
             job_type=RunJobType.LEAD_GEN,
             status=RunStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
+            platform="lead_gen"
         )
         db.add(run_record)
         await db.commit()
         await db.refresh(run_record)
         run_id = run_record.id
+        started_at = run_record.started_at
 
         try:
             await _upsert_targets(db)
@@ -423,47 +429,64 @@ async def run_lead_gen() -> None:
             return
     # Session is now closed; targets are detached (column values still accessible).
 
-    # Phase 2: scrape each target with its own isolated write session.
     items_attempted = len(targets)
     items_succeeded = 0
     items_failed = 0
     error_summary = None
 
-    for target in targets:
-        target_url: str = target.url  # capture before any potential expiry
-        try:
-            success = await scrape_target(target)
-            if success:
-                items_succeeded += 1
-            else:
+    file_logger = RunLogger(
+        job_type=RunJobType.LEAD_GEN.value,
+        platform="lead_gen",
+        run_id=str(run_id),
+        started_at=started_at
+    )
+
+    try:
+        for target in targets:
+            target_url: str = target.url
+            try:
+                success, details = await scrape_target(target)
+                if success:
+                    items_succeeded += 1
+                    file_logger.log_item({"url": target_url, "status": "success", **details})
+                else:
+                    items_failed += 1
+                    file_logger.log_item({"url": target_url, "status": "failed", **details})
+            except Exception as e:
+                logger.error(
+                    f"[LeadGen] Unhandled error processing target {target_url}",
+                    exc_info=True,
+                )
                 items_failed += 1
-        except Exception as e:
-            logger.error(
-                f"[LeadGen] Unhandled error processing target {target_url}",
-                exc_info=True,
-            )
-            items_failed += 1
-            if not error_summary:
-                error_summary = str(e)[:500]
+                if not error_summary:
+                    error_summary = str(e)[:500]
+                file_logger.log_item({"url": target_url, "status": "error", "error": str(e)})
+
+    except Exception as e:
+        logger.error(f"[LeadGen] Fatal loop error: {e}", exc_info=True)
+        error_summary = f"Fatal error: {e}"[:500]
+        
+    finally:
+        file_logger.close()
+        
+        # Phase 3: Update run record status
+        async with AsyncSessionLocal() as db:
+            status = RunStatus.SUCCESS if items_failed < items_attempted or items_attempted == 0 else RunStatus.FAILED
+            if error_summary and status == RunStatus.SUCCESS:
+                status = RunStatus.FAILED # If there was a fatal unhandled error, mark failed
                 
-    # Phase 3: Update run record status
-    async with AsyncSessionLocal() as db:
-        status = RunStatus.SUCCESS if items_failed < items_attempted or items_attempted == 0 else RunStatus.FAILED
-        if error_summary and status == RunStatus.SUCCESS:
-            status = RunStatus.FAILED # If there was a fatal unhandled error, mark failed
-            
-        await db.execute(
-            update(ScrapeRun)
-            .where(ScrapeRun.id == run_id)
-            .values(
-                status=status,
-                finished_at=datetime.now(timezone.utc),
-                items_attempted=items_attempted,
-                items_succeeded=items_succeeded,
-                items_failed=items_failed,
-                error_summary=error_summary,
+            await db.execute(
+                update(ScrapeRun)
+                .where(ScrapeRun.id == run_id)
+                .values(
+                    status=status,
+                    finished_at=datetime.now(timezone.utc),
+                    items_attempted=items_attempted,
+                    items_succeeded=items_succeeded,
+                    items_failed=items_failed,
+                    error_summary=error_summary,
+                )
             )
-        )
-        await db.commit()
+            await db.commit()
 
     logger.info("[LeadGen] Lead generation run complete")
