@@ -118,12 +118,23 @@ async def run_real_estate_monitor():
     )
 
     try:
+        vrbo_blocked = False
+        airbnb_blocked = False
+        
         for item in properties_input:
             property_label = item.get("name", item["url"])
             logger.info(f"Processing property: {property_label}")
+            
+            platform = item.get("platform", "airbnb")
+            if platform == "vrbo" and vrbo_blocked:
+                logger.info(f"Skipping {property_label} (Vrbo blocked for this run)")
+                continue
+            if platform == "airbnb" and airbnb_blocked:
+                logger.info(f"Skipping {property_label} (Airbnb blocked for this run)")
+                continue
+                
             total_attempted += 1
             try:
-                platform = item.get("platform", "airbnb")
 
                 if platform == "vrbo":
                     if vrbo_count >= 15:
@@ -170,8 +181,8 @@ async def run_real_estate_monitor():
                     scrape_url = build_scrape_url(room_id, check_in_str, check_out_str)
                 logger.info(f"Fetching URL: {scrape_url}")
 
-                # Random sleep 5-15s between properties (bot-avoidance)
-                sleep_sec = random.randint(5, 15)
+                # Random sleep 45-90s between properties (bot-avoidance)
+                sleep_sec = random.randint(45, 90)
                 logger.info(f"Sleeping {sleep_sec}s before request...")
                 await asyncio.sleep(sleep_sec)
 
@@ -203,6 +214,53 @@ async def run_real_estate_monitor():
                     total_failed += 1
                     errors.append(f"Network failure: {scrape_url}")
                     continue
+                    
+                if response.status in (429, 403):
+                    logger.error(f"BLOCKED ({response.status}) on {scrape_url}. Pausing further {platform} scraping.")
+                    errors.append(f"{platform.capitalize()} Blocked: {scrape_url}")
+                    total_failed += 1
+                    if platform == "vrbo":
+                        blocked_count += 1
+                        vrbo_blocked = True
+                    else:
+                        airbnb_blocked = True
+                        
+                    file_logger.log_item({"url": scrape_url, "status": "blocked", "error": f"HTTP {response.status}"})
+                    continue
+
+                if response.status == 404:
+                    logger.warning(f"NOT FOUND (404) on {scrape_url}. Skipping.")
+                    errors.append(f"Not Found (404): {scrape_url}")
+                    total_failed += 1
+                    file_logger.log_item({"url": scrape_url, "status": "not_found", "error": "HTTP 404"})
+                    
+                    # Track consecutive 404s logic 
+                    async with AsyncSessionLocal() as session:
+                        upd = (
+                            Property.__table__.update()
+                            .where(Property.id == property_id)
+                            .values(consecutive_404s=Property.consecutive_404s + 1)
+                        )
+                        await session.execute(upd)
+                        await session.commit()
+                    continue
+                    
+                if response.status != 200:
+                    logger.warning(f"HTTP {response.status} on {scrape_url}. Skipping.")
+                    errors.append(f"HTTP {response.status}: {scrape_url}")
+                    total_failed += 1
+                    file_logger.log_item({"url": scrape_url, "status": "failed", "error": f"HTTP {response.status}"})
+                    continue
+                    
+                # Reset consecutive_404s on successful 200
+                async with AsyncSessionLocal() as session:
+                    upd = (
+                        Property.__table__.update()
+                        .where(Property.id == property_id)
+                        .values(consecutive_404s=0)
+                    )
+                    await session.execute(upd)
+                    await session.commit()
 
                 # Coalesce-style metadata update: only write non-None values so a
                 # field successfully captured in a previous run is never overwritten

@@ -244,6 +244,7 @@ class Property(CustomBase):
     longitude: Mapped[Decimal | None] = mapped_column(Numeric(10, 7))
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    consecutive_404s: Mapped[int] = mapped_column(Integer, default=0)
     client_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("clients.id", ondelete="SET NULL"), index=True
     )

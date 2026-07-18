@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from engines.real_estate_extractors import ask_tier3_real_estate
 
 def extract_vrbo_property_id(url: str) -> str:
-    match = re.search(r"vrbo\.com/(\d+)", url)
+    match = re.search(r"vrbo\.com/([a-zA-Z0-9]+)", url)
     if not match:
         raise ValueError(f"Could not extract a Vrbo property ID from: {url}")
     return match.group(1)
@@ -29,14 +29,27 @@ def extract_vrbo_metadata(response) -> Dict[str, Any]:
     if name_node:
         metadata['name'] = name_node.strip()
 
-    # Bedrooms from H3 containing "bedroom"
+    # Bedrooms from all text to ensure we don't miss it if it's not a direct text node of H3
     _BEDROOM_RE = re.compile(r"(\d+)\s+bedroom", re.IGNORECASE)
-    bedroom_nodes = response.css('h3:contains("bedroom")::text').getall()
-    for _text in bedroom_nodes:
-        _m = _BEDROOM_RE.search(_text)
-        if _m:
-            metadata['bedrooms'] = int(_m.group(1))
-            break
+    try:
+        # getall() on elements that might contain it, then join to handle nested spans
+        h3_elements = response.css('h3').getall()
+        for html_str in h3_elements:
+            soup = BeautifulSoup(html_str, "lxml")
+            text = soup.get_text(separator=" ", strip=True)
+            _m = _BEDROOM_RE.search(text)
+            if _m:
+                metadata['bedrooms'] = int(_m.group(1))
+                break
+                
+        if metadata['bedrooms'] is None:
+            # Fallback to general text if no h3 matched
+            all_text = response.get_all_text(strip=True, ignore_tags=("script", "style", "noscript"))
+            _m = _BEDROOM_RE.search(str(all_text))
+            if _m:
+                metadata['bedrooms'] = int(_m.group(1))
+    except Exception:
+        pass
 
     # Host name (H3 that has a sibling or child containing "Host")
     # Actually, html_tags2.txt shows: <h3 class="uitk-heading uitk-heading-6">Robert Grogan Jr.</h3>

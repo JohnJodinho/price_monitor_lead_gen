@@ -6,25 +6,7 @@
     "property_key": null
   },
   {
-    "url": "https://www.vrbo.com/12107955ha",
-    "platform": "vrbo",
-    "market": "NYC/NJ Metro",
-    "property_key": null
-  },
-  {
-    "url": "https://www.vrbo.com/12108049ha",
-    "platform": "vrbo",
-    "market": "NYC/NJ Metro",
-    "property_key": null
-  },
-  {
     "url": "https://www.vrbo.com/5115217",
-    "platform": "vrbo",
-    "market": "NYC/NJ Metro",
-    "property_key": null
-  },
-  {
-    "url": "https://www.vrbo.com/12108051ha",
     "platform": "vrbo",
     "market": "NYC/NJ Metro",
     "property_key": null
@@ -55,18 +37,6 @@
   },
   {
     "url": "https://www.vrbo.com/4018908",
-    "platform": "vrbo",
-    "market": "NYC/NJ Metro",
-    "property_key": null
-  },
-  {
-    "url": "https://www.vrbo.com/9702689ha",
-    "platform": "vrbo",
-    "market": "NYC/NJ Metro",
-    "property_key": null
-  },
-  {
-    "url": "https://www.vrbo.com/12107946ha",
     "platform": "vrbo",
     "market": "NYC/NJ Metro",
     "property_key": null
@@ -232,5 +202,65 @@
     "platform": "airbnb",
     "market": "Miami",
     "property_key": null
+  },
+  {
+    "url": "https://www.vrbo.com/4186764",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "4186764"
+  },
+  {
+    "url": "https://www.vrbo.com/4723354",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "4723354"
+  },
+  {
+    "url": "https://www.vrbo.com/3612290",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "3612290"
+  },
+  {
+    "url": "https://www.vrbo.com/4708896",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "4708896"
+  },
+  {
+    "url": "https://www.vrbo.com/2884378",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "2884378"
+  },
+  {
+    "url": "https://www.vrbo.com/4065770",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "4065770"
+  },
+  {
+    "url": "https://www.vrbo.com/4034562",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "4034562"
+  },
+  {
+    "url": "https://www.vrbo.com/5362636",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "5362636"
+  },
+  {
+    "url": "https://www.vrbo.com/3943518",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "3943518"
+  },
+  {
+    "url": "https://www.vrbo.com/4747435",
+    "platform": "vrbo",
+    "market": "NYC/NJ Metro",
+    "property_key": "4747435"
   }
 ]

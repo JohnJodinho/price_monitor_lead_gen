@@ -15,3 +15,6 @@ html_tags.txt
 main_targets.json
 migration_real_estate.sql
 migration_leads.sql
+airbnb.txt
+listings.json
+vrbo.txt
