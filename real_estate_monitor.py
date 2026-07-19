@@ -138,9 +138,8 @@ async def run_real_estate_monitor():
                 if platform == "vrbo":
                     if vrbo_count >= 15:
                         logger.info(
-                            f"Skipping {property_label} (Vrbo test limit of 15 reached)"
-                        )
-                        continue
+                            f" Not Skipping {property_label} " )
+                        
                     vrbo_count += 1
                     room_id = extract_vrbo_property_id(item["url"])
                     base_url = f"https://www.vrbo.com/{room_id}"
