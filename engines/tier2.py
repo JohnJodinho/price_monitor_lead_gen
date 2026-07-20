@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT: int = 60
 
+
 async def fetch_tier2(url: str, timeout: int = DEFAULT_TIMEOUT) -> Optional[Response]:
     """
     Attempt a stealthy browser fetch (async).

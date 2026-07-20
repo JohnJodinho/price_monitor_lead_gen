@@ -180,8 +180,8 @@ async def run_real_estate_monitor():
                     scrape_url = build_scrape_url(room_id, check_in_str, check_out_str)
                 logger.info(f"Fetching URL: {scrape_url}")
 
-                # Random sleep 3 - 10s between properties (bot-avoidance)
-                sleep_sec = random.randint(3, 10)
+                # Random sleep 10 - 30s between properties (bot-avoidance)
+                sleep_sec = random.randint(10, 30)
                 logger.info(f"Sleeping {sleep_sec}s before request...")
                 await asyncio.sleep(sleep_sec)
 
