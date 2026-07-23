@@ -196,6 +196,7 @@ class RunJobType(str, enum.Enum):
 class RunStatus(str, enum.Enum):
     RUNNING = "running"
     SUCCESS = "success"
+
     FAILED = "failed"
 
 
