@@ -10,5 +10,76 @@
     {
         "url": "https://www.laserplumbingeasttamaki.co.nz",
         "category": "plumbing"
+    },
+    {
+        "url": "https://www.setialaw.com/",
+        "category": "legal"
+    },
+    {
+        "url": "http://www.trc.com.sg",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.francinetan.com/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.kltan.com.sg/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "https://advomi.com.sg/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "https://www.davindersinghchambers.com/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.sterlinglaw.com.sg/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.arlc.com.sg/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "https://www.lvmlawchambers.com/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.ramdwong.com.sg/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "https://www.gracelaw.sg/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.kirpalaw.com/",
+        "category": "legal"
+    }
+    ,
+    {
+        "url": "http://www.twobirds.com/",
+        "category": "legal"
+    },
+    {
+        "url": "http://www.dnlproperties.com",
+        "category": "real_estate"
+    },
+    {
+        "url": "https://www.propertyshoma.com/",
+        "category": "real_estate"
     }
 ]

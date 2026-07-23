@@ -7,8 +7,6 @@ from scrapling.fetchers import FetcherSession, AsyncStealthySession
 
 from db import AsyncSessionLocal
 from config import get_settings
-from engines.escalation import needs_tier2
-import lead_generator
 
 
 class HomepageCrawlerSpider(Spider):
@@ -42,18 +40,6 @@ class HomepageCrawlerSpider(Spider):
 
     def configure_sessions(self, manager) -> None:
         manager.add(
-            "http",
-            FetcherSession(
-                impersonate="chrome",
-                stealthy_headers=True,
-                timeout=self._t1_timeout,
-                retries=3,
-                retry_delay=1,
-                follow_redirects="safe",
-            ),
-            default=True,
-        )
-        manager.add(
             "stealth",
             AsyncStealthySession(
                 headless=True,
@@ -62,50 +48,13 @@ class HomepageCrawlerSpider(Spider):
                 google_search=True,
                 timeout=self._t2_timeout * 1000,
             ),
-            lazy=True,
+            default=True,
         )
 
     async def parse(self, response: Response):
         """
-        Two possible arrival paths:
-          (A) Fetched by "http" session — response.meta.get("session") is absent/None
-          (B) Re-fetched by "stealth"  — response.meta.get("session") == "stealth"
+        Extract contacts and queue subsequent pages from the StealthyFetcher response.
         """
-        already_stealthy: bool = response.meta.get("session") == "stealth"
-
-        if not already_stealthy:
-            try:
-                text_preview = str(response.get_all_text(strip=True))[:500].lower()
-            except Exception:
-                text_preview = ""
-
-            if needs_tier2(text_preview, response_is_none=False):
-                self.logger.info(
-                    f"[HomepageCrawl] Escalating to stealth: {response.url}"
-                )
-                yield Request(
-                    response.url,
-                    sid="stealth",
-                    callback=self.parse,
-                    dont_filter=True,  # bypass dedup — url already seen by "http"
-                    meta={"session": "stealth"},  # loop-prevention marker
-                    priority=5,
-                )
-                return  # do NOT extract leads or follow links from the "http" response
-
-        if already_stealthy:
-            try:
-                text_preview_stealth = str(response.get_all_text(strip=True))[
-                    :500
-                ].lower()
-            except Exception:
-                text_preview_stealth = ""
-            if needs_tier2(text_preview_stealth, response_is_none=False):
-                self.logger.warning(
-                    f"[HomepageCrawl] Stealth response still thin/blocked for "
-                    f"{response.url} — no further escalation, treating as no-contacts-found."
-                )
-                return  # log and move on; not a crash
 
         self._pages_crawled += 1
         self.logger.info(
@@ -121,6 +70,7 @@ class HomepageCrawlerSpider(Spider):
                 pass
 
         try:
+            import lead_generator
             target_domain = urlparse(self._target.url).netloc.replace("www.", "")
             contacts, socials = lead_generator._extract_contacts(response, target_domain=target_domain)
         except Exception:
@@ -177,6 +127,7 @@ async def crawl_homepage(url: str, target) -> bool:
     )
     leads_saved = 0
     try:
+        import lead_generator
         async for item in spider.stream():
             async with AsyncSessionLocal() as save_db:
                 leads_saved += await lead_generator._save_leads(

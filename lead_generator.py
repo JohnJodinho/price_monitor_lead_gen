@@ -20,11 +20,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db import AsyncSessionLocal, create_tables
 from models import LeadTarget, Lead, ScrapeRun, RunJobType, RunStatus
-from engines.tier1 import fetch_tier1
-from engines.tier2 import fetch_tier2
+from scrapling.fetchers import StealthyFetcher
 from urllib.parse import urlparse
 from engines.homepage_crawler import crawl_homepage
-from engines.escalation import needs_tier2
 from schemas import ContactsSchema, SocialsSchema
 
 from scrapling.engines.toolbelt.custom import Response
@@ -298,29 +296,22 @@ async def scrape_target(target: LeadTarget) -> bool:
 
     # ── Existing dedicated-page path: unchanged below ──
 
-    # Network operations inside Tier 1 handle their own try/excepts and return None on failure
-    response: Optional[Response] = fetch_tier1(url)
-
-    # Determine if escalation is needed
     try:
-        text_preview: str = (
-            str(response.get_all_text(strip=True))[:500].lower() if response else ""
+        response = await StealthyFetcher.async_fetch(
+            url,
+            headless=True,
+            network_idle=True,
+            block_webrtc=True,
+            google_search=True,
+            timeout=60_000,
+            wait=3000,
         )
     except Exception as e:
-        logger.warning(
-            f"[LeadGen] Error parsing text preview for {url}: {e}", exc_info=True
-        )
-        text_preview = ""
-
-    needs_escalation = needs_tier2(text_preview, response_is_none=(response is None))
-
-    if needs_escalation:
-        logger.info(f"[LeadGen] Escalating to Tier 2 for {url}")
-        # Network operations inside Tier 2 handle their own try/excepts and return None on failure
-        response = await fetch_tier2(url)
+        logger.error(f"[LeadGen] Fetch exception for {url}: {e}", exc_info=True)
+        response = None
 
     if response is None:
-        logger.error(f"[LeadGen] All tiers failed for {url}")
+        logger.error(f"[LeadGen] Browser fetch failed completely for {url}")
         return False, {"error": "All tiers failed"}
 
     target_domain = urlparse(target.url).netloc.replace("www.", "")

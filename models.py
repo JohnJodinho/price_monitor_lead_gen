@@ -73,6 +73,7 @@ class Product(CustomBase):
     )  # e.g. "bestbuy" or "amazon" or "walmart"
     target_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    consecutive_404s: Mapped[int] = mapped_column(Integer, default=0)
     price_history: Mapped[List["PriceHistory"]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )

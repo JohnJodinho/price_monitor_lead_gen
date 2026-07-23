@@ -1,15 +1,16 @@
 """
 Price Monitor — independently editable module.
 
-TO ADD OR REMOVE PRODUCTS: edit the PRODUCTS_TO_TRACK list below.
-No API call, no migration required.
+TO ADD OR REMOVE PRODUCTS: edit products_to_track.json (no migration required).
 
 Run directly via GitHub Actions:
     python -c "import asyncio; from price_monitor import run_monitor; asyncio.run(run_monitor())"
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+import asyncio
+import random
+from typing import List, Dict, Any, Optional, Set
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,9 +27,9 @@ from models import (
     RunJobType,
     RunStatus,
 )
-from engines.tier1 import fetch_tier1
-from engines.tier2 import fetch_tier2
+from scrapling.fetchers import StealthyFetcher
 from engines.tier3 import extract_price_tier3
+from engines.ecommerce_extractors import extract_for_retailer, infer_retailer_from_url
 import json
 from observability import run_watchdog, RunLogger
 
@@ -64,15 +65,13 @@ async def _upsert_products(db: AsyncSession) -> None:
     Sync PRODUCTS_TO_TRACK to the products table.
 
     Step 1 — Deactivate any existing rows whose URL is no longer in the config.
-      Removing a URL from PRODUCTS_TO_TRACK will set that product's is_active=False,
-      stopping it from being scraped on the next run. Historical price_history rows
-      are preserved (product row stays in DB, just inactive).
+    Step 2 — Upsert the current config list, inferring retailer from the URL domain
+             when not explicitly provided in the JSON config.
 
-    Step 2 — Upsert the current config list.
-      Uses INSERT ... ON CONFLICT DO UPDATE so:
-        - New entries are inserted with is_active=True
-        - Existing entries (matched by URL) have name/target_price refreshed
-          and is_active reset to True
+    Retailer backfill:
+      Existing rows whose retailer column still holds the DB default 'Unknown'
+      are updated in this same step by the upsert's set_ clause, which always
+      writes the freshly inferred retailer value.
 
     Args:
         db (AsyncSession): The active database session.
@@ -92,7 +91,6 @@ async def _upsert_products(db: AsyncSession) -> None:
                 .values(is_active=False)
             )
         else:
-            # If the list is empty, deactivate all active products
             deactivate_stmt = (
                 update(Product).where(Product.is_active == True).values(is_active=False)
             )
@@ -104,11 +102,19 @@ async def _upsert_products(db: AsyncSession) -> None:
 
         # Step 2: upsert current config
         for p in PRODUCTS_TO_TRACK:
+            # Retailer: explicit field wins; otherwise infer from URL domain.
+            retailer: str = (
+                p.get("retailer")
+                or infer_retailer_from_url(p["url"])
+            )
             stmt = (
                 pg_insert(Product)
                 .values(
                     name=p["name"],
                     url=p["url"],
+                    sku=p.get("sku"),
+                    category=p.get("category"),
+                    retailer=retailer,
                     target_price=p.get("target_price"),
                     is_active=True,
                 )
@@ -116,6 +122,11 @@ async def _upsert_products(db: AsyncSession) -> None:
                     index_elements=["url"],
                     set_={
                         "name": p["name"],
+                        "sku": p.get("sku"),
+                        "category": p.get("category"),
+                        # Always write the inferred retailer — this also
+                        # back-fills the 'Unknown' default on existing rows.
+                        "retailer": retailer,
                         "target_price": p.get("target_price"),
                         "is_active": True,
                     },
@@ -175,62 +186,69 @@ def _is_thin_response(response: Any) -> bool:
 async def _save_price(
     db: AsyncSession,
     product: Product,
-    price: float,
+    price: Optional[float],
     currency: str,
     tier_used: int,
+    in_stock: bool = True,
+    merchant: Optional[str] = None,
+    meta_data: Optional[dict] = None,
 ) -> None:
     """
-    Persist a price reading and fire any applicable alerts.
+    Persist a price/stock reading and fire any applicable alerts.
 
-    Alert logic:
+    All five PriceHistory fields are written atomically:
+      price, currency, tier_used, in_stock, merchant, meta_data.
+
+    Alert logic (only fires when price is not None and product is in stock):
       1. Query the most recent prior price_history row BEFORE inserting.
       2. Insert the new PriceHistory record.
-      3. "threshold" alert: if product.target_price is set and new price <=
+      3. Threshold alert: if product.target_price is set and new price <=
          target_price, fire a threshold alert.
-      4. "change" alert: if a prior price exists and the absolute % change
-         from that prior price >= PRICE_CHANGE_THRESHOLD_PCT, fire a change
-         alert. Direction is recorded in pct_change's sign.
-
-    Note: created_at is set automatically by server_default=func.now() on Base.
+      4. Change-detection alert: if a prior price exists and the absolute %
+         change >= PRICE_CHANGE_THRESHOLD_PCT, fire a change alert.
 
     Args:
-        db (AsyncSession): The active database session.
-        product (Product): The product being monitored.
-        price (float): The newly scraped price.
-        currency (str): The currency of the price.
-        tier_used (int): The scraping tier that successfully obtained the price.
+        db         : Active database session.
+        product    : The product being monitored (detached from any session).
+        price      : Scraped price (float) or None for OOS / unresolvable.
+        currency   : ISO-4217 string, e.g. "USD".
+        tier_used  : 1–4, whichever tier produced the result.
+        in_stock   : False when the product is confirmed OOS.
+        merchant   : Seller string, e.g. "Ships from: Amazon / Sold by: AnkerDirect".
+        meta_data  : Arbitrary JSON blob (condition, coupon, ships_from, etc.).
 
     Raises:
-        Exception: If the database operations fail, rolls back the transaction and raises.
+        Exception: Rolls back and re-raises on any DB failure.
     """
     try:
-        # 1. Fetch prior price before inserting new record.
-        #    scalar_one_or_none() returns Decimal for Numeric columns; cast to float
-        #    immediately so all downstream arithmetic uses a uniform type.
-        prior_result = await db.execute(
-            select(PriceHistory.price)
-            .where(PriceHistory.product_id == product.id)
-            .order_by(desc(PriceHistory.created_at))
-            .limit(1)
-        )
-        _raw_prev = prior_result.scalar_one_or_none()
-        previous_price: Optional[float] = (
-            float(_raw_prev) if _raw_prev is not None else None
-        )
+        # 1. Fetch prior price before inserting (for change-detection alert).
+        #    Only meaningful when a price was actually found.
+        previous_price: Optional[float] = None
+        if price is not None:
+            prior_result = await db.execute(
+                select(PriceHistory.price)
+                .where(PriceHistory.product_id == product.id)
+                .where(PriceHistory.price.isnot(None))  # ignore prior OOS nulls
+                .order_by(desc(PriceHistory.created_at))
+                .limit(1)
+            )
+            _raw_prev = prior_result.scalar_one_or_none()
+            previous_price = float(_raw_prev) if _raw_prev is not None else None
 
-        # 2. Insert new price record
+        # 2. Insert new price record with full field set.
         record = PriceHistory(
             product_id=product.id,
             price=price,
             currency=currency,
             tier_used=tier_used,
+            in_stock=in_stock,
+            merchant=merchant,
+            meta_data=meta_data or {},
         )
         db.add(record)
 
-        # 3. Threshold alert.
-        #    product.target_price is Decimal (from DB); cast to float before comparing
-        #    with the scraped price (float) to avoid TypeError on mixed arithmetic.
-        if product.target_price is not None:
+        # 3. Threshold alert — only when we have a real price and product is live.
+        if price is not None and in_stock and product.target_price is not None:
             target_price_f: float = float(product.target_price)
             if price <= target_price_f:
                 threshold_alert = PriceAlert(
@@ -247,8 +265,8 @@ async def _save_price(
                     f"(target: {target_price_f})"
                 )
 
-        # 4. Change-detection alert
-        if previous_price is not None:
+        # 4. Change-detection alert — requires both old and new numeric prices.
+        if price is not None and previous_price is not None:
             raw_pct: float = (price - previous_price) / previous_price * 100.0
             if abs(raw_pct) >= PRICE_CHANGE_THRESHOLD_PCT:
                 change_alert = PriceAlert(
@@ -276,116 +294,143 @@ async def _save_price(
         raise
 
 
-async def scrape_product(product: Product) -> bool:
+async def scrape_product(
+    product: Product,
+    blocked_retailers: Optional[Set[str]] = None,
+) -> tuple[bool, dict]:
     """
-    Run the 3-tier pipeline for a single product URL.
+    Full extraction pipeline for a single product URL.
 
-    Tier 1  ->  fast curl_cffi HTTP request
-    Tier 2  ->  stealthy Playwright browser (escalate if Tier 1 is thin)
-    Tier 3  ->  regex + Groq LLM (if CSS selector extraction fails)
+    Pipeline:
+      Tier 0  ->  HTTP status gate (404 -> not_found; 429/403 -> blocked).
+                  Blocked / not-found products do NOT get a PriceHistory row.
+      Tier 1  ->  curl_cffi HTTP fetch + retailer-specific DOM/JSON extraction.
+      Tier 2  ->  StealthyFetcher browser (only if Tier 1 response is thin).
+      Tier 3  ->  retailer-specific state classification (no-offers, variant).
+      Tier 4  ->  Groq LLM regex fallback (only if price still None and no
+                  terminal state was classified).
 
-    Opens its own isolated AsyncSession for the DB write so that a save
-    failure and rollback cannot expire ORM objects held by the caller's
-    read session (which would cause MissingGreenlet on the next iteration).
+    Retailer routing:
+      product.retailer is used (populated by _upsert_products via URL inference).
+      Per-retailer blocking: if a 429/403 is received for a given retailer, the
+      caller's blocked_retailers set is updated and subsequent products for that
+      retailer are skipped for this run.
+
+    Opens its own isolated AsyncSession for DB writes to prevent MissingGreenlet
+    errors (see prior docstring for details).
 
     Args:
-        product (Product): The product to scrape. Must be detached (expunged)
-                           from any session before being passed here so that
-                           accessing its column attributes does not trigger a
-                           lazy-load on a closed/expired session.
+        product          : Detached Product ORM object.
+        blocked_retailers: Mutable set of retailer slugs currently blocked this run.
 
     Returns:
-        bool: True if extraction and saving was successful, False otherwise.
+        (success: bool, details: dict)
     """
+    if blocked_retailers is None:
+        blocked_retailers = set()
+
     url: str = product.url
-    tier_used: int = 1
-    price: Optional[float] = None
-    currency: str = "USD"
+    retailer: str = getattr(product, "retailer", None) or infer_retailer_from_url(url)
 
-    # --- Tier 1 ---
-    # Network operations inside Tier 1 handle their own try/excepts and return None on failure
-    response = fetch_tier1(url)
+    # -----------------------------------------------------------------------
+    # Per-retailer blocking guard (skip if already blocked this run)
+    # -----------------------------------------------------------------------
+    if retailer in blocked_retailers:
+        logger.info(f"[Monitor] Skipping {url} — retailer '{retailer}' blocked this run")
+        return False, {"state": "retailer_blocked", "retailer": retailer}
 
-    if _is_thin_response(response):
-        logger.info(f"[Monitor] Escalating to Tier 2 for {url}")
-        # Network operations inside Tier 2 handle their own try/excepts and return None on failure
-        response = await fetch_tier2(url)
-        tier_used = 2
+    # -----------------------------------------------------------------------
+    # Network fetch (StealthyFetcher only)
+    # -----------------------------------------------------------------------
+    try:
+        response = await StealthyFetcher.async_fetch(
+            url,
+            headless=True,
+            network_idle=True,
+            block_webrtc=True,
+            google_search=True,
+            timeout=60_000,
+            wait=3000,
+        )
+    except Exception as e:
+        logger.error(f"[Monitor] Fetch exception for {url}: {e}", exc_info=True)
+        response = None
 
     if response is None:
-        logger.error(f"[Monitor] All network tiers failed for {url}")
-        return False, {"error": "All network tiers failed"}
+        logger.error(f"[Monitor] Network failure for {url} — blocking retailer '{retailer}' for this run")
+        blocked_retailers.add(retailer)
+        return False, {"state": "network_failure", "error": "Browser fetch failed completely"}
 
-    # --- CSS extraction (fast, zero LLM cost) ---
-    # Try a cascade of common price selectors before calling the LLM.
-    try:
-        price_raw: Optional[str] = (
-            response.css(".price::text").get()
-            or response.css("[data-price]::attr(data-price)").get()
-            or response.css(".a-price-whole::text").get()  # Amazon
-            or response.css(".priceToPay::text").get()  # Amazon alt
-            or response.css("span[itemprop='price']::attr(content)").get()
-            or response.css(
-                "meta[property='product:price:amount']::attr(content)"
-            ).get()
-            or response.css(
-                "#__next > main > div > div > div > div.product-content-wrapper.css-36ak8o.e1pl6npa12 > div.css-1f150rr.e15c0rei0 > div.css-kqe5aa.emlf3670 > div.product-info-wrapper.css-m2w3q2.emlf3670 > div.price.css-o7uf8d.e1pl6npa6::text"
-            ).get()
-            or response.css(
-                "body > div.wrapper > main > div.container.test-sites-cars.item-page > div.mb-5 > div.product-wrapper > div > div:nth-child(2) > div.title-section.mb-3 > h3 > span.amount::text"
-            ).get()
-            or response.css(
-                "#content_inner > article > div.row > div.col-sm-6.product_main > p.price_color::text"
-            ).get()
-        )
-
-        if price_raw:
-            # Strip whitespace, thousands-separator commas, then currency symbols
-            # from BOTH ends — handles both prefix (€9199) and suffix (9199 €) formats.
-            # Also strips non-breaking spaces (\xa0) common in European price strings.
-            cleaned: str = price_raw.strip().replace(",", "").strip("$£€¥₹₩₽ \xa0")
-            price = float(cleaned)
-    except Exception as e:
+    # -----------------------------------------------------------------------
+    # Tier 0 — HTTP status gate
+    # -----------------------------------------------------------------------
+    status_code = getattr(response, "status", None)
+    if status_code in (429, 403):
         logger.warning(
-            f"[Monitor] Exception during CSS extraction for {url}: {e}", exc_info=True
+            f"[Monitor] Tier-0: {status_code} for {url} — "
+            f"blocking retailer '{retailer}' for this run"
         )
-        price = None
+        blocked_retailers.add(retailer)
+        return False, {
+            "state": "blocked",
+            "status_code": status_code,
+            "retailer": retailer,
+        }
+    if status_code == 404:
+        logger.warning(f"[Monitor] Tier-0: 404 for {url} — not_found, skipping")
+        return False, {"state": "not_found", "status_code": 404}
 
-    # --- Tier 3 fallback if CSS failed ---
-    if price is None:
-        logger.info(f"[Monitor] CSS extraction failed — escalating to Tier 3 for {url}")
-        tier_used = 3
-        # Network operations inside Tier 3 (LLM call) handle their own try/excepts
-        result: Optional[dict] = extract_price_tier3(
-            response, product_hint=product.name
-        )
-        if result and result.get("price") is not None:
-            try:
-                price = float(result["price"])
-                currency = str(result.get("currency") or "USD")
-            except (ValueError, TypeError) as e:
-                logger.warning(
-                    f"[Monitor] Exception parsing Tier 3 result for {url}: {e}",
-                    exc_info=True,
-                )
-                price = None
+    # -----------------------------------------------------------------------
+    # Retailer-specific extraction (Tiers 1-4 delegated to extractor)
+    # -----------------------------------------------------------------------
+    extraction = extract_for_retailer(retailer, response, product_hint=product.name)
 
-    if price is None:
-        logger.warning(f"[Monitor] Could not extract price for {url}")
-        return False, {"error": "Could not extract price"}
+    price: Optional[float] = extraction["price"]
+    currency: str = extraction["currency"]
+    in_stock: bool = extraction["in_stock"]
+    merchant: Optional[str] = extraction["merchant"]
+    meta_data: dict = extraction["meta_data"]
+    tier_used: int = extraction["tier_used"]
+    state: str = extraction["state"]
 
-    logger.info(f"[Monitor] {product.name}: {currency} {price:.2f} (Tier {tier_used})")
+    # Network tier tracking is removed. tier_used 1 = DOM, 2 = LLM.
 
-    # Each product gets its own isolated write session.
-    # This prevents a rollback here from expiring ORM objects in the caller's
-    # read session, which would cause MissingGreenlet on the next iteration.
+    logger.info(
+        f"[Monitor] {product.name} | retailer={retailer} | "
+        f"price={currency} {price} | in_stock={in_stock} | "
+        f"tier={tier_used} | state={state}"
+    )
+
+    # Terminal states: no DB write, return failure to caller
+    if state in ("no_featured_offers", "variant_required", "parse_error"):
+        return False, {"state": state, "tier": tier_used, "retailer": retailer}
+
+    # -----------------------------------------------------------------------
+    # Persist — isolated write session (prevents MissingGreenlet on caller)
+    # -----------------------------------------------------------------------
     try:
         async with AsyncSessionLocal() as save_db:
-            await _save_price(save_db, product, price, currency, tier_used)
-        return True, {"price": price, "currency": currency, "tier": tier_used}
+            await _save_price(
+                save_db,
+                product,
+                price=price,
+                currency=currency,
+                tier_used=tier_used,
+                in_stock=in_stock,
+                merchant=merchant,
+                meta_data=meta_data,
+            )
+        return True, {
+            "price": price,
+            "currency": currency,
+            "in_stock": in_stock,
+            "merchant": merchant,
+            "tier": tier_used,
+            "state": state,
+            "retailer": retailer,
+        }
     except Exception as e:
-        # Error is logged inside _save_price
-        return False, {"error": str(e)}
+        return False, {"state": "db_error", "error": str(e), "retailer": retailer}
 
 
 async def run_monitor() -> None:
@@ -393,10 +438,15 @@ async def run_monitor() -> None:
     Entry point for GitHub Actions.
 
     Steps:
-      1. Ensure DB tables exist (idempotent)
-      2. Upsert PRODUCTS_TO_TRACK config into the products table
-         (also deactivates products removed from config)
-      3. Scrape all active products sequentially
+      1. Ensure DB tables exist (idempotent).
+      2. Watchdog: mark stale RUNNING runs as FAILED.
+      3. Create a new ScrapeRun record.
+      4. Upsert PRODUCTS_TO_TRACK into the products table (also backfills retailer).
+      5. Query all active products.
+      6. Scrape sequentially with per-retailer blocking: once a 429/403 is received
+         from retailer X, all remaining products from retailer X are skipped for
+         this run. Products from other retailers are unaffected.
+      7. Finalise the ScrapeRun record.
     """
     logging.basicConfig(level=logging.INFO)
     logger.info("[Monitor] Starting price monitor run")
@@ -407,21 +457,18 @@ async def run_monitor() -> None:
         logger.error("[Monitor] Failed to create tables on startup", exc_info=True)
         return
 
-    # Phase 1: upsert config + read active products in one short-lived session.
-    # expunge_all() detaches the ORM objects so their column attributes remain
-    # accessible after the session closes, without any lazy-load risk.
     products: List[Product] = []
     run_id = None
+    started_at = None
 
     async with AsyncSessionLocal() as db:
         await run_watchdog(db, RunJobType.PRICE_MONITOR.value, max_duration_hours=4)
-        
-        # Create run record
+
         run_record = ScrapeRun(
             job_type=RunJobType.PRICE_MONITOR,
             status=RunStatus.RUNNING,
             started_at=datetime.now(timezone.utc),
-            platform="ecommerce"
+            platform="ecommerce",
         )
         db.add(run_record)
         await db.commit()
@@ -435,9 +482,15 @@ async def run_monitor() -> None:
             logger.error(
                 "[Monitor] Aborting run due to product upsert failure", exc_info=True
             )
-            run_record.status = RunStatus.FAILED
-            run_record.finished_at = datetime.now(timezone.utc)
-            run_record.error_summary = str(e)[:500]
+            await db.execute(
+                update(ScrapeRun)
+                .where(ScrapeRun.id == run_id)
+                .values(
+                    status=RunStatus.FAILED,
+                    finished_at=datetime.now(timezone.utc),
+                    error_summary=str(e)[:500],
+                )
+            )
             await db.commit()
             return
 
@@ -445,58 +498,122 @@ async def run_monitor() -> None:
             result = await db.execute(select(Product).where(Product.is_active == True))
             products = list(result.scalars().all())
             logger.info(f"[Monitor] {len(products)} active products to check")
-            # Detach all objects so they outlive this session safely.
-            db.expunge_all()
+            db.expunge_all()  # detach so column attributes survive session close
         except Exception as e:
             logger.error("[Monitor] Failed to query active products", exc_info=True)
-            run_record.status = RunStatus.FAILED
-            run_record.finished_at = datetime.now(timezone.utc)
-            run_record.error_summary = str(e)[:500]
+            await db.execute(
+                update(ScrapeRun)
+                .where(ScrapeRun.id == run_id)
+                .values(
+                    status=RunStatus.FAILED,
+                    finished_at=datetime.now(timezone.utc),
+                    error_summary=str(e)[:500],
+                )
+            )
             await db.commit()
             return
-    # Session is now closed; products are detached (column values still accessible).
+    # Session closed; ORM objects are detached but safe to read.
 
     items_attempted = len(products)
     items_succeeded = 0
     items_failed = 0
     error_summary = None
 
+    # Per-retailer blocking set — shared across the product loop.
+    # Once a 429/403 is received for a retailer, its slug is added here
+    # and all further products from that retailer are skipped this run.
+    blocked_retailers: Set[str] = set()
+
     file_logger = RunLogger(
         job_type=RunJobType.PRICE_MONITOR.value,
         platform="ecommerce",
         run_id=str(run_id),
-        started_at=started_at
+        started_at=started_at,
     )
 
     try:
         for product in products:
             product_url: str = product.url
+            
+            # Bot-avoidance sleep (5 to 15 seconds)
+            sleep_sec = random.randint(5, 15)
+            logger.info(f"[Monitor] Sleeping {sleep_sec}s before checking {product_url}")
+            await asyncio.sleep(sleep_sec)
+
             try:
-                success, details = await scrape_product(product)
+                success, details = await scrape_product(
+                    product,
+                    blocked_retailers=blocked_retailers,
+                )
+                
+                # Handle 404 Observability & Auto-Disable
+                if details.get("state") == "not_found":
+                    async with AsyncSessionLocal() as session:
+                        upd = (
+                            update(Product)
+                            .where(Product.id == product.id)
+                            .values(consecutive_404s=Product.consecutive_404s + 1)
+                        )
+                        await session.execute(upd)
+                        
+                        # Check if threshold reached
+                        result = await session.execute(
+                            select(Product.consecutive_404s).where(Product.id == product.id)
+                        )
+                        new_404_count = result.scalar()
+                        if new_404_count is not None and new_404_count >= 3:
+                            logger.warning(
+                                f"[Monitor] {product_url} reached {new_404_count} consecutive 404s. Disabling product."
+                            )
+                            await session.execute(
+                                update(Product)
+                                .where(Product.id == product.id)
+                                .values(is_active=False)
+                            )
+                        await session.commit()
+                elif success or details.get("state") == "success":
+                    # Reset 404s on successful finding
+                    async with AsyncSessionLocal() as session:
+                        await session.execute(
+                            update(Product)
+                            .where(Product.id == product.id)
+                            .values(consecutive_404s=0)
+                        )
+                        await session.commit()
+
                 if success:
                     items_succeeded += 1
-                    file_logger.log_item({"url": product_url, "status": "success", **details})
+                    file_logger.log_item(
+                        {"url": product_url, "status": "success", **details}
+                    )
                 else:
                     items_failed += 1
-                    file_logger.log_item({"url": product_url, "status": "failed", **details})
+                    file_logger.log_item(
+                        {"url": product_url, "status": "failed", **details}
+                    )
             except Exception as e:
                 logger.error(
-                    f"[Monitor] Unhandled error processing product {product_url}",
+                    f"[Monitor] Unhandled error processing {product_url}",
                     exc_info=True,
                 )
                 items_failed += 1
                 if not error_summary:
                     error_summary = str(e)[:500]
-                file_logger.log_item({"url": product_url, "status": "error", "error": str(e)})
+                file_logger.log_item(
+                    {"url": product_url, "status": "error", "error": str(e)}
+                )
 
     except Exception as e:
         logger.error(f"[Monitor] Fatal loop error: {e}", exc_info=True)
         error_summary = f"Fatal error: {e}"[:500]
-        
+
     finally:
         file_logger.close()
-        
-        # Phase 3: Update run record status
+        if blocked_retailers:
+            logger.warning(
+                f"[Monitor] Retailers blocked this run (429/403): {blocked_retailers}"
+            )
+
         async with AsyncSessionLocal() as db:
             status = (
                 RunStatus.SUCCESS
@@ -516,6 +633,7 @@ async def run_monitor() -> None:
                     items_succeeded=items_succeeded,
                     items_failed=items_failed,
                     error_summary=error_summary,
+                    meta_data={"blocked_retailers": list(blocked_retailers)},
                 )
             )
             await db.commit()

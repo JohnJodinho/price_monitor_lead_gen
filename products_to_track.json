@@ -1,37 +1,17 @@
 [
-    {
-        "name": "Oxylabs Sandbox Product 1",
-        "url": "https://sandbox.oxylabs.io/products/1",
-        "target_price": 500.0
-    },
-    {
-        "name": "A Light in the Attic",
-        "url": "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html",
-        "target_price": 150.0
-    },
-    {
-        "name": "Sapiens: A Brief History of Humankind",
-        "url": "https://books.toscrape.com/catalogue/sapiens-a-brief-history-of-humankind_996/index.html",
-        "target_price": 60.3
-    },
-    {
-        "name": "Mercedes-Benz W123 280E (1955)",
-        "url": "https://webscraper.io/test-sites/product/mercedes-benz-w123-280e-1955-c001",
-        "target_price": 20023.0
-    },
-    {
-        "name": "Toyota AE86 Sprinter Trueno (1962)",
-        "url": "https://webscraper.io/test-sites/product/toyota-ae86-sprinter-trueno-1962-c062",
-        "target_price": 17614.0
-    },
-    {
-        "name": "The Requiem Red",
-        "url": "https://books.toscrape.com/catalogue/the-requiem-red_995/index.html",
-        "target_price": 800.0
-    },
-    {
-        "name": "Oxylabs Sandbox Product 7",
-        "url": "https://sandbox.oxylabs.io/products/7",
-        "target_price": 400.0
-    }
+  {"name": "Sony WH-CH720N Noise Canceling Headphones (Black)", "url": "https://www.amazon.com/Sony-WH-CH720N-Canceling-Headphones-Microphone/dp/B0BS1QCFHX", "retailer": "amazon", "sku": "WH-CH720N/B", "category": "electronics_audio"},
+  {"name": "Sony WH-CH720N Noise Canceling Headphones (Black)", "url": "https://www.walmart.com/ip/Sony-WH-CH720N-Noise-Canceling-Wireless-Bluetooth-Headphones-Black/2809072158", "retailer": "walmart", "sku": "WH-CH720N/B", "category": "electronics_audio"},
+  {"name": "Sony WH-CH720N Noise Canceling Headphones (Black)", "url": "https://www.bestbuy.com/product/sony-whch720n-wireless-noise-cancelling-headphones-black/J7XSRH53Q5", "retailer": "bestbuy", "sku": "WH-CH720N/B", "category": "electronics_audio"},
+
+  {"name": "JBL Tune 770NC Adaptive Noise Cancelling Headphones (Black)", "url": "https://www.amazon.com/JBL-TUNE-770NC-Lightweight-comfortable/dp/B0CT9XTKKM", "retailer": "amazon", "sku": "JBLT770NCBLKAM", "category": "electronics_audio"},
+  {"name": "JBL Tune 770NC Adaptive Noise Cancelling Headphones (Black)", "url": "https://www.walmart.com/ip/JBL-Tune-770NC-Adaptive-Noise-Cancelling-Wireless-Over-Ear-Headphones-Black/5212441966", "retailer": "walmart", "sku": "JBLT770NCBLKAM", "category": "electronics_audio"},
+  {"name": "JBL Tune 770NC Adaptive Noise Cancelling Headphones (Black)", "url": "https://www.bestbuy.com/site/jbl-tune-770nc-adaptive-noise-cancelling-wireless-over-ear-headphone-black/6572446.p", "retailer": "bestbuy", "sku": "JBLT770NCBLKAM", "category": "electronics_audio"},
+
+  {"name": "Beats Solo 4 Wireless Headphones (Matte Black)", "url": "https://www.amazon.com/Beats-Solo-Wireless-Headphones-Matte/dp/B0CZPLV566", "retailer": "amazon", "sku": "MUW23LL/A", "category": "electronics_audio"},
+  {"name": "Beats Solo 4 Wireless Headphones (Matte Black)", "url": "https://www.walmart.com/ip/Beats-Solo4-Wireless-Headphones-On-Ear-Wireless-Headphones-Matte-Black/5326288985", "retailer": "walmart", "sku": "MUW23LL/A", "category": "electronics_audio"},
+  {"name": "Beats Solo 4 Wireless Headphones (Matte Black)", "url": "https://www.bestbuy.com/product/beats-solo-4-wireless-on-ear-headphones-matte-black/JJGCQXWKWL?intl=nosplash", "retailer": "bestbuy", "sku": "MUW23LL/A", "category": "electronics_audio"},
+
+  {"name": "Soundcore by Anker Space One Headphones (Black)", "url": "https://www.amazon.com/Soundcore-Cancelling-Headphones-Reduction-Comfortable/dp/B0C6KFZC9Z/", "retailer": "amazon", "sku": "A3035", "category": "electronics_audio"},
+  {"name": "Soundcore by Anker Space One Headphones (Black)", "url": "https://www.walmart.com/ip/Soundcore-by-Anker-Space-One-Active-Noise-Cancelling-Headphones-2X-Stronger-Voice-Reduction/1493272962", "retailer": "walmart", "sku": "A3035", "category": "electronics_audio"},
+  {"name": "Soundcore by Anker Space One Headphones (Black)", "url": "https://www.bestbuy.com/product/soundcore-by-anker-space-one-wireless-adaptive-noise-cancelling-over-the-ear-headphones-black/JJ8586V23Q", "retailer": "bestbuy", "sku": "A3035", "category": "electronics_audio"}
 ]

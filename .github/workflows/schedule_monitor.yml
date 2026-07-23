@@ -37,6 +37,14 @@ jobs:
         run: python -m patchright install chromium --with-deps
         if: steps.patchright-cache.outputs.cache-hit != 'true'
 
+      - name: Check runner geolocation
+        run: |
+          echo "=== Runner IP and Geo Context ==="
+          curl -s --max-time 10 https://ipinfo.io/json || echo "ipinfo.io unreachable"
+          echo ""
+          echo "=== /etc/timezone ==="
+          cat /etc/timezone 2>/dev/null || echo "not available"
+
       - name: Run price monitor
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

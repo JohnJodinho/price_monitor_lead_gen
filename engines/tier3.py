@@ -95,6 +95,9 @@ def _ask_groq(contexts: List[Dict[str, str]], product_hint: str = "") -> Optiona
         "You are a price extraction assistant. Given text snippets from a product "
         "page, identify the PRIMARY sale price (not a crossed-out original price, "
         "not a shipping cost, not a subscription fee).\n\n"
+        "WARNING: You must identify the price of the exact product matching the Product hint. "
+        "DO NOT extract the price of cheaper accessories (like cases, warranties, ear pads) or "
+        "related products shown in 'frequently bought together' sections.\n\n"
         f"Price candidates found on the page:\n{snippets}\n\n"
         "Respond with ONLY valid JSON in this exact format, no explanation:\n"
         '{"price": <float>, "currency": "<ISO 3-letter code>", "confidence": "<high|medium|low>"}\n\n'
@@ -117,32 +120,37 @@ def _ask_groq(contexts: List[Dict[str, str]], product_hint: str = "") -> Optiona
 
 
 def extract_price_tier3(
-    response: Response,
+    response: Response = None,
     product_hint: str = "",
+    text_snippet: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Tier 3 price extraction from an existing Response object.
+    Tier 3 price extraction from an existing Response object or text snippet.
     
     This function analyzes the text of the page. It makes no HTTP requests.
 
     Args:
-        response (Response): A Scrapling Response already fetched.
+        response (Response): A Scrapling Response already fetched (optional if text_snippet is provided).
         product_hint (str): Optional product name. Defaults to "".
+        text_snippet (str): Optional raw text to analyze instead of the entire response.
 
     Returns:
         Optional[Dict[str, Any]]: Dictionary containing 'price', 'currency', 
                                   and 'confidence', or None on total failure.
     """
-    try:
-        all_text = str(
-            response.get_all_text(
-                strip=True,
-                ignore_tags=("script", "style", "noscript"),
+    if text_snippet is not None:
+        all_text = text_snippet
+    else:
+        try:
+            all_text = str(
+                response.get_all_text(
+                    strip=True,
+                    ignore_tags=("script", "style", "noscript"),
+                )
             )
-        )
-    except Exception as e:
-        logger.warning(f"[Tier3] Failed to extract text from response: {e}", exc_info=True)
-        return None
+        except Exception as e:
+            logger.warning(f"[Tier3] Failed to extract text from response: {e}", exc_info=True)
+            return None
 
     if not all_text:
         logger.warning("[Tier3] No text content extracted from response")

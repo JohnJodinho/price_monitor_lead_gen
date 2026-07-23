@@ -1,105 +1,63 @@
-# Autonomous Scraping Backend: Price Monitor & Lead Generator
+# Autonomous Scraping Backend: Price Monitor, Lead Generator & Real Estate Tracker
 
-An advanced, stealthy, and highly resilient asynchronous scraping backend built with Python 3.11. This project leverages a cascading multi-tier scraping strategy to autonomously monitor product prices and extract business leads while circumventing modern bot protections.
+## Overview
+This system is an automated, stealthy scraping backend that performs three distinct business functions: monitoring e-commerce product prices across major retailers, tracking real estate/travel rate fluctuations across booking platforms, and extracting B2B business leads from target websites. Built as a collection of serverless, ephemeral cron jobs triggered via GitHub Actions, the system persists all extracted data into a shared PostgreSQL database (e.g., Supabase, Neon) which powers a separate frontend application.
 
-Designed for zero-maintenance production deployment, the backend runs as ephemeral, serverless cron jobs via **GitHub Actions**, persisting all data to a **PostgreSQL** database (e.g., Supabase, Neon) using SQLAlchemy 2.0 Async.
+## Architecture
+The core architectural pattern consists of specialized scrapers feeding into a unified Postgres database (via SQLAlchemy 2.0 Async), designed to run entirely in the background without exposing REST APIs. The scraping engines rely on `StealthyFetcher` (leveraging `curl_cffi` and `scrapling` under the hood) to bypass modern bot protections. A core design decision across all modules is a **tiered extraction philosophy**: the system attempts structural and regex-based parsing first (Tier-1) for speed and cost-efficiency. If standard DOM parsing fails to find the target data (or if complex layouts change), it escalates to an LLM-based fallback (via Groq/LLaMA 3) to intelligently extract information from the raw page text without brittle rules.
 
----
-
-## 🏗 Architecture
-
-This project is strictly a background worker. There are no exposed REST APIs or long-running servers. Execution is triggered via GitHub Actions schedules.
-
-### The Multi-Tier Scraping Cascade
-To balance speed, cost, and success rate, the backend employs a dynamic escalation strategy:
-
-* **Tier 1: Fast HTTP (Scrapling / curl_cffi)**
-  * Extremely fast and memory-efficient.
-  * Impersonates Chrome TLS fingerprints to bypass basic WAFs.
-  * Used as the first attempt for all URLs.
-* **Tier 2: Headless Browser (Patchright)**
-  * Full Chromium instance used to render JavaScript-heavy SPAs or bypass complex captchas.
-  * The system automatically escalates to Tier 2 if Tier 1 returns thin content, gets blocked by Cloudflare/Datadome, or triggers a captcha.
-* **Tier 3: AI Extraction (Groq / LLaMA 3)** *(Price Monitor Only)*
-  * If standard CSS selectors fail to find a price on the page, the raw text is passed to an LLM via the Groq API.
-  * The LLM intelligently parses complex page layouts to extract the numerical price and currency without brittle regex.
-
----
-
-## 📦 Core Modules
+## Engines
 
 ### 1. Price Monitor (`price_monitor.py`)
-Monitors a predefined list of product URLs for price changes.
-* **Smart Alerts:** Detects and logs when a price drops below a specific `target_price`, or when a price shifts by a significant percentage compared to the previous run.
-* **Data Integrity:** Stores historical price time-series (`price_history`) and explicit alert records (`price_alerts`).
+* **Purpose:** Monitors a predefined list of e-commerce product URLs for price changes, detecting out-of-stock states and generating smart alerts when prices drop below a threshold or shift significantly.
+* **Input Format:** Reads from `products_to_track.json`. Example: `{"name": "Beats Solo 4 Wireless Headphones", "url": "...", "retailer": "amazon", "sku": "MUW23LL/A", "category": "electronics_audio"}`
+* **Extraction Tiers:** Uses `ecommerce_extractors.py` which attempts structural extraction first (e.g., hidden form inputs, apex price spans, and whole+fraction combinations on Amazon). It includes location guards to discard non-USD prices resulting from VPN routing, and twister JSON classification to detect variants/out-of-stock. If structural extraction fails, it falls back to an LLM extraction restricted to the buy-box.
+* **Schedule:** Hourly within the 3-hour gaps between Real Estate runs (`0 3,4,5,9,10,11,15,16,17,21,22,23 * * *`).
 
-### 2. Lead Generator (`lead_generator.py`)
-Scrapes business contact information from a list of target URLs.
-* **Extraction:** Pulls emails, phone numbers, and company names from page text and `mailto:` links.
-* **Deduplication:** Ensures leads are not duplicated in the database if the scraper runs across the same page multiple times.
+### 2. Real Estate Monitor (`real_estate_monitor.py`)
+* **Purpose:** Tracks nightly rates, availability, and dynamic pricing for rental properties across platforms like Airbnb and Vrbo.
+* **Input Format:** Reads from `properties_to_track.json`. Example: `{"url": "https://www.vrbo.com/5365580", "platform": "vrbo", "market": "NYC/NJ Metro", "property_key": null}`
+* **Quirks:** Implements anti-bot evasion by intentionally interleaving requests (e.g., mixing Airbnb and Vrbo requests rather than hitting one platform sequentially). Vrbo extraction detects specific blocked states, while Airbnb uses nested JSON data extraction.
+* **Schedule:** Runs every 6 hours (`0 0,6,12,18 * * *`).
 
----
+### 3. Lead Generator (`lead_generator.py`)
+* **Purpose:** Autonomously crawls target URLs to extract B2B contact information (emails, phone numbers, social links) and company names.
+* **Input Format:** Reads from `lead_targets.json`. Example: `{"url": "https://compassplumbing.co.nz", "category": "plumbing"}`
+* **Extraction:** For homepages, it initiates a recursive spider that streams discovered pages in search of contact details. For deep links, it performs a single fetch. Data is upserted into the DB to avoid duplicates.
+* **Schedule:** Runs 4 times a day, positioned safely away from other jobs (`30 4,10,16,22 * * *`).
 
-## 🚀 Deployment & Usage
+## Data Model
+The database is structured around several core domains, defined in `models.py`:
+* **E-commerce:** `Product` stores the core listing, linked to `PriceHistory` (time-series snapshots) and `PriceAlert` (fired events). `sku` is used to group the same item across different retailers. `PriceHistory.price` is nullable to accurately represent out-of-stock states without inserting misleading `0.00` values.
+* **Real Estate:** `Property` stores listing metadata, linked to `RateHistory` which tracks the price of a specific stay-date over time. `Property.property_key` allows grouping of the same physical unit across different platforms (Airbnb vs Vrbo). `RateHistory.nightly_rate` is nullable for booked/blocked dates.
+* **Lead Generation:** `LeadTarget` represents the seed URL, and `Lead` stores extracted contacts (emails, phones) as JSONB objects.
+* **Observability & Multitenancy:** `ScrapeRun` tracks execution metadata, and `Client` handles multitenant segmentation.
 
-### 1. Prerequisites
-You need a PostgreSQL database (Neon or Supabase work perfectly) and a Groq API key for Tier 3 extraction.
+## Observability
+The system employs a dual-persistence observability pattern:
+1. **Summary Persistence:** Every job run creates a `ScrapeRun` row in the database with overall status, start/end times, and counts for `items_attempted`, `items_succeeded`, and `items_failed`. A `run_watchdog` automatically marks orphaned runs as failed if they exceed maximum duration.
+2. **Detailed Logs:** A `RunLogger` writes granular, item-level JSONL log files (e.g., `price_monitor_ecommerce_<id>.log`) into the `logs/` directory. These logs are automatically uploaded as GitHub Actions artifacts with a **14-day retention period**.
 
-Create a `.env` file for local development:
-```env
-DATABASE_URL=postgresql+asyncpg://user:password@host/dbname
-GROQ_API_KEY=gsk_your_groq_api_key
-```
+## Setup & Environment
+The backend requires several environment variables for configuration. **Do not commit actual secrets.**
+* `DATABASE_URL`: Connection string for the PostgreSQL database (e.g., `postgresql+asyncpg://...`).
+* `GROQ_API_KEY`: API key for the Groq LLM fallback extraction.
+* `HOMEPAGE_*`: Various configuration variables for the Lead Generator spider (e.g., `HOMEPAGE_MAX_PAGES`, `HOMEPAGE_T1_TIMEOUT`, `HOMEPAGE_DOWNLOAD_DELAY`, `HOMEPAGE_ROBOTS_TXT_OBEY`, `HOMEPAGE_CONTACT_KEYWORDS`).
 
-### 2. Configuration
-The system uses "config as code". To add or remove targets, you do not need to interact with a database UI. Simply edit the hardcoded lists at the top of the respective Python files:
-* `PRODUCTS_TO_TRACK` in `price_monitor.py`
-* `LEAD_TARGETS` in `lead_generator.py`
+**One-Time Setup:**
+For the `StealthyFetcher` and underlying engines to work in CI/CD, the GitHub Actions workflows explicitly run `python -m patchright install chromium --with-deps` to cache and install the necessary Chromium binaries. 
 
-*Note: Removing an item from these lists automatically marks it as inactive in the database during the next run, preserving its historical data while halting future scraping.*
+## Scheduling
+To avoid IP bans and resource contention, cron jobs are intentionally staggered in GitHub Actions:
 
-### 3. Local Development
-Install dependencies:
-```bash
-pip install -r requirements.txt
-python -m patchright install chromium --with-deps
-```
+| Workflow | Cron Schedule | Runs | Purpose |
+|----------|---------------|------|---------|
+| Price Monitor | `0 3,4,5,9,10,11,15,16,17,21,22,23 * * *` | Hourly (in 3hr gaps) | High-frequency price tracking, avoiding real estate windows. |
+| Real Estate Monitor | `0 0,6,12,18 * * *` | Every 6 hours | Heavy scraping job occupying the 00, 06, 12, and 18 hours. |
+| Lead Gen | `30 4,10,16,22 * * *` | 4 times daily | Mid-block placement offset from the other jobs by 30 mins to 1.5 hrs. |
 
-You can run the modules manually to test them:
-```bash
-# Run the price monitor
-python -c "import asyncio; from price_monitor import run_monitor; asyncio.run(run_monitor())"
-
-# Run the lead generator
-python -c "import asyncio; from lead_generator import run_lead_gen; asyncio.run(run_lead_gen())"
-```
-
-### 4. Production (GitHub Actions)
-The project includes two GitHub Actions workflows:
-* `.github/workflows/schedule_monitor.yml` (Runs every 6 hours)
-* `.github/workflows/schedule_lead_gen.yml` (Runs daily)
-
-To deploy:
-1. Push this repository to GitHub.
-2. Go to your repository **Settings > Secrets and variables > Actions**.
-3. Add `DATABASE_URL` and `GROQ_API_KEY` as repository secrets.
-4. The cron jobs will automatically start running on schedule.
-
----
-
-## 🗄️ Database Schema & Run Tracking
-
-The backend uses **SQLAlchemy 2.0 Async**. Tables are created automatically on the first run (`create_tables()` is called idempotently).
-
-**Telemetry & Observability:**
-Every execution of the Price Monitor or Lead Generator creates a `ScrapeRun` record in the database. This allows you to track:
-* Start and end times (duration).
-* Overall job status (`running`, `success`, `failed`).
-* Granular success rates (`items_attempted`, `items_succeeded`, `items_failed`).
-* Fatal error summaries if the job crashed.
-
----
-
-## 🛡️ Fault Tolerance & Isolation
-* **Per-Item Commits:** If processing 10 products and the 5th one crashes the browser, the first 4 are safely committed to the database. The system catches the error, logs it, and continues to the 6th product.
-* **Session Isolation:** Each target is processed in its own isolated SQLAlchemy `AsyncSession`. A database rollback on one item will never poison or expire the ORM objects of subsequent items.
+## Known Limitations & Reliability Notes
+* **Target Inputs:** Target lists are managed via JSON files (`products_to_track.json`, `properties_to_track.json`, `lead_targets.json`), which the scripts read to upsert the database configs.
+* **Anti-Bot Considerations:** Amazon and Best Buy deploy aggressive location spoofing and HTTP/2 protocol errors. The extractors have specific guards (e.g., checking if the parsed currency symbol is USD) to detect and discard non-US session artefacts.
+* **Vrbo / Booking.com:** Booking.com is currently not monitored. Vrbo is heavily rate-limited, hence the deliberate interleaving with Airbnb requests in the Real Estate monitor to dilute request frequency per domain.
+* **Amazon ASIN Proliferation:** Due to how Amazon handles variants, ensure that the precise variant URL (often requiring selection of a specific style/size) is provided in `products_to_track.json`. Generic parent URLs may trigger the `variant_required` terminal state.
