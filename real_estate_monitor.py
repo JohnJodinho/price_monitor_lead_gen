@@ -376,7 +376,9 @@ async def run_real_estate_monitor():
         file_logger.close()
 
         async with AsyncSessionLocal() as session:
-            final_status = RunStatus.SUCCESS if not errors else RunStatus.FAILED
+            # Item-level failures shouldn't fail the whole run. Only fatal errors do.
+            is_fatal = any(e.startswith("Fatal run error") for e in errors) if errors else False
+            final_status = RunStatus.FAILED if is_fatal else RunStatus.SUCCESS
             upd = (
                 ScrapeRun.__table__.update()
                 .where(ScrapeRun.id == run_record.id)
