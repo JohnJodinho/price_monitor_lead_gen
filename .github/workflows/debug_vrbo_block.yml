@@ -1,0 +1,51 @@
+name: Debug Vrbo Block Capture
+
+on:
+  push:
+    paths:
+      - "debug_vrbo_block_capture.py"
+      - ".github/workflows/debug_vrbo_block.yml"
+  workflow_dispatch:
+
+jobs:
+  capture-vrbo-blocks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache Patchright Browsers
+        uses: actions/cache@v4
+        id: patchright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-patchright-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-patchright-
+
+      - name: Install Chromium for StealthyFetcher
+        run: python -m patchright install chromium --with-deps
+        if: steps.patchright-cache.outputs.cache-hit != 'true'
+
+      - name: Run Vrbo block capture
+        run: python debug_vrbo_block_capture.py
+
+      - name: Upload captured block artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vrbo-block-captures-${{ github.run_id }}
+          path: debug_captures/
+          retention-days: 14
+          if-no-files-found: warn
