@@ -75,6 +75,7 @@ async def main():
 
             screenshot_path = os.path.join(CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt+1}.png")
             html_path = os.path.join(CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt+1}.html")
+            ip_path = os.path.join(CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt+1}_ip.txt")
             screenshot_taken = {"done": False}
 
             async def take_screenshot(page):
@@ -148,6 +149,23 @@ async def main():
 
             if is_block:
                 logger.warning(f"[{room_id}] HTTP {status} | BLOCKED | title='{title.strip()}'")
+                
+                # Capture the IP without credentials
+                ip_address = "Direct Connection"
+                if vrbo_proxy_mode and current_vrbo_proxy:
+                    import urllib.parse
+                    try:
+                        parsed = urllib.parse.urlparse(current_vrbo_proxy)
+                        ip_address = parsed.hostname or "Unknown Proxy IP"
+                    except Exception:
+                        ip_address = "Unknown Proxy IP"
+                try:
+                    with open(ip_path, "w", encoding="utf-8") as f:
+                        f.write(f"Blocked IP: {ip_address}\n")
+                    logger.info(f"[{room_id}] Saved IP → {ip_path}")
+                except Exception:
+                    pass
+
                 if not vrbo_proxy_mode and vrbo_proxies:
                     logger.info(f"[{room_id}] Switching to proxy mode and retrying...")
                     vrbo_proxy_mode = True
