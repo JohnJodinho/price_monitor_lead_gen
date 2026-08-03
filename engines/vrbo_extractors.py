@@ -108,13 +108,24 @@ def extract_vrbo_pricing(response) -> Dict[str, Any]:
     title = response.css('title::text').get() or ""
     
     # 1. Block Detection
-    if title.strip() == "Bot or Not?" or "datadome" in html_content.lower() or response.status in (429, 403):
+    is_blocked = False
+    
+    if response.css('#DATADOME-CHALLENGE') or response.css('#cf-challenge-running') or response.css('.cf-browser-verification'):
+        is_blocked = True
+    elif title.strip() in ["Bot or Not?", "Just a moment...", "Attention Required!"]:
+        is_blocked = True
+    elif "datadome" in html_content.lower() or "cloudflare" in html_content.lower() or "perimeterx" in html_content.lower():
+        is_blocked = True
+    elif response.status in (429, 403):
+        is_blocked = True
+
+    if is_blocked:
         return {
             "is_available": None,
             "nightly_rate": None,
             "meta_data": {
                 "extraction_method": "blocked",
-                "error": "DataDome block detected"
+                "error": "Anti-bot challenge block detected"
             }
         }
 

@@ -221,6 +221,7 @@ class ScrapeRun(CustomBase):
     platform: Mapped[str | None] = mapped_column(
         String(200)
     )  # "amazon" | "airbnb" | "vrbo" | ...
+    anomalies_captured: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Property(CustomBase):
@@ -275,6 +276,8 @@ class RateHistory(CustomBase):
     meta_data: Mapped[dict] = mapped_column(
         JSONB, default=dict
     )  # minimum_stay, discount_applied, special_event_pricing, etc.
+    dlq_html_url: Mapped[str | None] = mapped_column(Text)
+    dlq_screenshot_url: Mapped[str | None] = mapped_column(Text)
 
     property: Mapped["Property"] = relationship(back_populates="rate_history")
 

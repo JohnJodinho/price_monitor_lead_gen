@@ -13,6 +13,38 @@ class Settings(BaseSettings):
     DATABASE_URL: str = Field(..., alias="DATABASE_URL")
 
     GROQ_API_KEY: SecretStr = Field(..., alias="GROQ_API_KEY")
+    
+    # ── Appwrite configuration ────────────────────────────────────────────────
+    APP_WRITE_PROJECT_ID: str = Field(..., alias="APP_WRITE_PROJECT_ID")
+    APP_WRITE_API_ENDPOINT: str = Field(..., alias="APP_WRITE_API_ENDPOINT")
+    APP_WRITE_API_KEY: SecretStr = Field(..., alias="APP_WRITE_API_KEY")
+    APP_WRITE_BUCKET_ID: str = Field(..., alias="APP_WRITE_BUCKET_ID")
+
+    # ── Proxy configuration ───────────────────────────────────────────────────
+    VRBO_PROXIES: str | None = Field(default=None, alias="VRBO_PROXIES")
+
+    @field_validator("VRBO_PROXIES")
+    @classmethod
+    def normalize_proxies(cls, v: str | None) -> str | None:
+        if not v:
+            return v
+        proxies = [p.strip() for p in v.split(",") if p.strip()]
+        normalized = []
+        for p in proxies:
+            if p.startswith("http://") or p.startswith("https://") or p.startswith("socks5://"):
+                normalized.append(p)
+            else:
+                parts = p.split(":")
+                if len(parts) == 4:
+                    ip, port, user, pwd = parts
+                    normalized.append(f"http://{user}:{pwd}@{ip}:{port}")
+                elif len(parts) == 2:
+                    ip, port = parts
+                    normalized.append(f"http://{ip}:{port}")
+                else:
+                    normalized.append(p)
+        return ",".join(normalized)
+
 
     # ── homepage crawler tunables ─────────────────────────────────────────────
     HOMEPAGE_MAX_PAGES: int = Field(default=8, alias="HOMEPAGE_MAX_PAGES")
