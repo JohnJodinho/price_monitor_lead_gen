@@ -3,6 +3,7 @@ Diagnostic script: hit Vrbo properties rapidly with no delay to capture block re
 NO database persistence. NO modifications to shared engine code.
 Now includes Proxy Rotation testing to verify if proxies bypass the block.
 """
+
 import asyncio
 import json
 import logging
@@ -22,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger("debug_vrbo_block")
 
 CAPTURES_DIR = "debug_captures"
-MAX_PROPERTIES = 2
+MAX_PROPERTIES = 5
 BLOCK_STATUSES = {403, 429}
 
 
@@ -40,7 +41,9 @@ async def main():
 
     vrbo_proxies = []
     if settings.VRBO_PROXIES:
-        vrbo_proxies = [p.strip() for p in settings.VRBO_PROXIES.split(",") if p.strip()]
+        vrbo_proxies = [
+            p.strip() for p in settings.VRBO_PROXIES.split(",") if p.strip()
+        ]
         logger.info(f"Loaded {len(vrbo_proxies)} proxies from environment.")
     else:
         logger.warning("No VRBO_PROXIES defined in environment.")
@@ -68,14 +71,20 @@ async def main():
 
         room_id = extract_vrbo_property_id(item["url"])
         scrape_url = build_vrbo_scrape_url(room_id, check_in_str, check_out_str)
-        
+
         max_retries = 1
         for attempt in range(max_retries + 1):
-            logger.info(f"[{room_id}] Fetching (Attempt {attempt+1}): {scrape_url}")
+            logger.info(f"[{room_id}] Fetching (Attempt {attempt + 1}): {scrape_url}")
 
-            screenshot_path = os.path.join(CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt+1}.png")
-            html_path = os.path.join(CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt+1}.html")
-            ip_path = os.path.join(CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt+1}_ip.txt")
+            screenshot_path = os.path.join(
+                CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt + 1}.png"
+            )
+            html_path = os.path.join(
+                CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt + 1}.html"
+            )
+            ip_path = os.path.join(
+                CAPTURES_DIR, f"debug_{room_id}_attempt_{attempt + 1}_ip.txt"
+            )
             screenshot_taken = {"done": False}
 
             async def take_screenshot(page):
@@ -97,7 +106,7 @@ async def main():
                 "page_action": take_screenshot,
                 "wait": 5000,
                 "timeout": 60_000,
-                "block_images": True, # Match real_estate_monitor proxy bandwidth saving
+                "block_images": True,  # Match real_estate_monitor proxy bandwidth saving
             }
 
             if vrbo_proxy_mode and current_vrbo_proxy:
@@ -122,7 +131,7 @@ async def main():
                 body = response.body.decode("utf-8", errors="replace")
             except:
                 pass
-                
+
             title = ""
             try:
                 title = response.css("title::text").get() or ""
@@ -130,11 +139,23 @@ async def main():
                 pass
 
             is_block = False
-            if response.css('#DATADOME-CHALLENGE') or response.css('#cf-challenge-running') or response.css('.cf-browser-verification'):
+            if (
+                response.css("#DATADOME-CHALLENGE")
+                or response.css("#cf-challenge-running")
+                or response.css(".cf-browser-verification")
+            ):
                 is_block = True
-            elif title.strip() in ["Bot or Not?", "Just a moment...", "Attention Required!"]:
+            elif title.strip() in [
+                "Bot or Not?",
+                "Just a moment...",
+                "Attention Required!",
+            ]:
                 is_block = True
-            elif "datadome" in body.lower() or "cloudflare" in body.lower() or "perimeterx" in body.lower():
+            elif (
+                "datadome" in body.lower()
+                or "cloudflare" in body.lower()
+                or "perimeterx" in body.lower()
+            ):
                 is_block = True
             elif status in BLOCK_STATUSES:
                 is_block = True
@@ -148,12 +169,15 @@ async def main():
                 pass
 
             if is_block:
-                logger.warning(f"[{room_id}] HTTP {status} | BLOCKED | title='{title.strip()}'")
-                
+                logger.warning(
+                    f"[{room_id}] HTTP {status} | BLOCKED | title='{title.strip()}'"
+                )
+
                 # Capture the IP without credentials
                 ip_address = "Direct Connection"
                 if vrbo_proxy_mode and current_vrbo_proxy:
                     import urllib.parse
+
                     try:
                         parsed = urllib.parse.urlparse(current_vrbo_proxy)
                         ip_address = parsed.hostname or "Unknown Proxy IP"
@@ -172,13 +196,18 @@ async def main():
                     current_vrbo_proxy = random.choice(vrbo_proxies)
                     continue
                 elif vrbo_proxy_mode:
-                    logger.error(f"[{room_id}] Proxy was also blocked! Proxy rotation failed.")
+                    logger.error(
+                        f"[{room_id}] Proxy was also blocked! Proxy rotation failed."
+                    )
                     break
             else:
-                logger.info(f"[{room_id}] HTTP {status} | SUCCESS | title='{title.strip()}'")
-                break # Success! No retry needed.
-                
+                logger.info(
+                    f"[{room_id}] HTTP {status} | SUCCESS | title='{title.strip()}'"
+                )
+                break  # Success! No retry needed.
+
         prop_count += 1
+
 
 if __name__ == "__main__":
     asyncio.run(main())
