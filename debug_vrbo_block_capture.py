@@ -36,6 +36,9 @@ def build_vrbo_scrape_url(
 
 
 async def main():
+    import shutil
+    if os.path.exists(CAPTURES_DIR):
+        shutil.rmtree(CAPTURES_DIR)
     os.makedirs(CAPTURES_DIR, exist_ok=True)
     settings = get_settings()
 
@@ -62,10 +65,11 @@ async def main():
     check_out_str = (today + timedelta(days=2)).strftime("%Y-%m-%d")
 
     prop_count = 0
-    vrbo_proxy_mode = False
-    current_vrbo_proxy = None
 
     for item in vrbo_properties:
+        vrbo_proxy_mode = False
+        current_vrbo_proxy = None
+
         if prop_count >= MAX_PROPERTIES:
             break
 
