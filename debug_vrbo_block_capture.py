@@ -8,11 +8,11 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from scrapling.fetchers import StealthyFetcher
 from engines.vrbo_extractors import extract_vrbo_property_id
-from real_estate_monitor import build_vrbo_scrape_url
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -22,6 +22,15 @@ logger = logging.getLogger("debug_vrbo_block")
 CAPTURES_DIR = "debug_captures"
 MAX_CAPTURES = 2
 BLOCK_STATUSES = {403, 429}
+
+
+def build_vrbo_scrape_url(
+    property_id: str, check_in: str, check_out: str, adults: int = 2
+) -> str:
+    """Inlined from real_estate_monitor.py to avoid its transitive DB imports."""
+    base = f"https://www.vrbo.com/{property_id}"
+    params = urlencode({"adults": adults, "chkin": check_in, "chkout": check_out})
+    return f"{base}?{params}"
 
 
 async def main():
