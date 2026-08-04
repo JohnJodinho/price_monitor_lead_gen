@@ -15,6 +15,7 @@ from config import get_settings
 from models import Property, RateHistory, ScrapeRun, RunJobType, RunStatus
 from scrapling.fetchers import StealthyFetcher
 from engines.real_estate_extractors import extract_metadata_from_json, extract_pricing
+from engines.fingerprint import build_fetch_profile
 from engines.vrbo_extractors import (
     extract_vrbo_property_id,
     extract_vrbo_metadata,
@@ -182,14 +183,28 @@ async def run_real_estate_monitor():
                 try:
                     logger.info(f"Fetching URL (Attempt {attempt+1}): {scrape_url}")
 
-                    # Random sleep 10 - 30s between properties (bot-avoidance)
-                    sleep_sec = random.randint(10, 30)
+                    # Platform-adaptive delay — Vrbo is more hostile, needs longer gaps
+                    if attempt == 0:
+                        sleep_sec = random.randint(20, 45) if platform == "vrbo" else random.randint(5, 15)
+                    else:
+                        # Retry after block: shorter gap, different proxy/fingerprint handles spacing
+                        sleep_sec = random.randint(3, 8)
                     logger.info(f"Sleeping {sleep_sec}s before request...")
                     await asyncio.sleep(sleep_sec)
 
                     html_bytes_ref = [None]
                     screenshot_bytes_ref = [None]
-                    
+
+                    # ── Per-property fingerprint profile ────────────────────────
+                    # Randomises timezone, locale, UA, Client Hints, screen/viewport,
+                    # hardware concurrency and deviceMemory independently per fetch.
+                    profile = build_fetch_profile()
+                    logger.info(
+                        f"Fingerprint: tz={profile.timezone_id} locale={profile.locale} "
+                        f"screen={profile.screen_w}x{profile.screen_h} "
+                        f"hw={profile.hardware_concurrency}cores/{profile.device_memory}GB"
+                    )
+
                     async def capture_artifacts(page):
                         try:
                             await page.wait_for_load_state("networkidle", timeout=5000)
@@ -202,11 +217,20 @@ async def run_real_estate_monitor():
                             logger.error(f"Failed to capture artifacts: {e}")
 
                     kwargs = {
-                        "headless": True,
-                        "block_webrtc": True,
-                        "google_search": True,
-                        "timeout": 90_000,
-                        "page_action": capture_artifacts,
+                        "headless":       True,
+                        "block_webrtc":   True,
+                        "google_search":  True,
+                        "hide_canvas":    True,
+                        "dns_over_https": True,
+                        "timeout":        90_000,
+                        "page_action":    capture_artifacts,
+                        "page_setup":     profile.page_setup_fn,
+                        # Fingerprint randomisation
+                        "timezone_id":    profile.timezone_id,
+                        "locale":         profile.locale,
+                        "useragent":      profile.user_agent,
+                        "extra_headers":  profile.extra_headers,
+                        "additional_args": profile.additional_args,
                     }
 
                     if platform == "vrbo":

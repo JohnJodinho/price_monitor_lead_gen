@@ -23,4 +23,27 @@ best_buy_script_tag.txt
 misc*
 train
 train_final
-vrbo-block-captures-30817165401
+
+# Debug / diagnostic capture directories and outputs
+debug_captures/
+proxy_isolation_results/
+vrbo-block-captures-*/
+
+# Scratch / one-off test scripts (not part of the application)
+run_proxy_test.py
+run_proxy_test_string.py
+proxy_isolation_test.py
+
+# Standard Python
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp

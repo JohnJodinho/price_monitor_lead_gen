@@ -109,12 +109,15 @@ def extract_vrbo_pricing(response) -> Dict[str, Any]:
     
     # 1. Block Detection
     is_blocked = False
-    
+
     if response.css('#DATADOME-CHALLENGE') or response.css('#cf-challenge-running') or response.css('.cf-browser-verification'):
         is_blocked = True
-    elif title.strip() in ["Bot or Not?", "Just a moment...", "Attention Required!"]:
+    elif title.strip() in ["Bot or Not?", "Just a moment...", "Attention Required!", "Too Many Requests"]:
         is_blocked = True
     elif "datadome" in html_content.lower() or "cloudflare" in html_content.lower() or "perimeterx" in html_content.lower():
+        is_blocked = True
+    elif "provisioned request rate has been exceeded" in html_content.lower():
+        # AWS API Gateway / CloudFront upstream rate-limit (no anti-bot library HTML present)
         is_blocked = True
     elif response.status in (429, 403):
         is_blocked = True

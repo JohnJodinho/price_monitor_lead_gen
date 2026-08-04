@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from scrapling.fetchers import StealthyFetcher
 from engines.vrbo_extractors import extract_vrbo_property_id
+from engines.fingerprint import build_fetch_profile
 from config import get_settings
 
 logging.basicConfig(
@@ -102,15 +103,32 @@ async def main():
                 except Exception as e:
                     logger.warning(f"Screenshot failed: {e}")
 
+            profile = build_fetch_profile()
+            logger.info(
+                f"[{room_id}] Fingerprint: tz={profile.timezone_id} "
+                f"ua={profile.user_agent[:40]}... "
+                f"screen={profile.screen_w}x{profile.screen_h} "
+                f"hw={profile.hardware_concurrency}cores/{profile.device_memory}GB"
+            )
+
             kwargs = {
-                "headless": True,
-                "load_dom": True,
-                "block_webrtc": True,
-                "google_search": True,
-                "page_action": take_screenshot,
-                "wait": 5000,
-                "timeout": 60_000,
-                "block_images": True,  # Match real_estate_monitor proxy bandwidth saving
+                "headless":       True,
+                "load_dom":       True,
+                "block_webrtc":   True,
+                "google_search":  True,
+                "hide_canvas":    True,
+                "dns_over_https": True,
+                "page_action":    take_screenshot,
+                "page_setup":     profile.page_setup_fn,
+                "wait":           5000,
+                "timeout":        60_000,
+                "block_images":   True,
+                # Fingerprint randomisation — matches production real_estate_monitor.py
+                "timezone_id":    profile.timezone_id,
+                "locale":         profile.locale,
+                "useragent":      profile.user_agent,
+                "extra_headers":  profile.extra_headers,
+                "additional_args": profile.additional_args,
             }
 
             if vrbo_proxy_mode and current_vrbo_proxy:
