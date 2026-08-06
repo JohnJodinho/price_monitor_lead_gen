@@ -37,7 +37,7 @@ def _upload_file_sync(bucket_id: str, file_name: str, file_bytes: bytes) -> str:
         file=input_file
     )
     
-    file_id = result["$id"]
+    file_id = result.id  # Appwrite SDK returns a typed File model; attribute is 'id' (alias for '$id')
     
     # Construct view URL
     view_url = f"{settings.APP_WRITE_API_ENDPOINT}/storage/buckets/{bucket_id}/files/{file_id}/view?project={settings.APP_WRITE_PROJECT_ID}"
