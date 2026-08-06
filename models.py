@@ -240,6 +240,7 @@ class Property(CustomBase):
     market: Mapped[str] = mapped_column(String(200))  # "NYC/NJ Metro", "Miami"
     bedrooms: Mapped[int | None] = mapped_column(Integer)
     host_name: Mapped[str | None] = mapped_column(String(300))
+    host_profile_url: Mapped[str | None] = mapped_column(String(500))
     cleaning_fee: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     review_count: Mapped[int | None] = mapped_column(Integer)
     avg_rating: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
