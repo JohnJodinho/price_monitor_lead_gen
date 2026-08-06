@@ -10,9 +10,12 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Pattern for accessibility price span e.g. "$1,250 for 3 nights"
+# Matches both plain ("$1,250 for 3 nights") and discounted
+# ("$534 for 3 nights, originally $633") accessibility aria-label formats.
+# Group 1 = charged total, Group 2 = nights, Group 3 = original total (optional).
 PRICE_PATTERN = re.compile(
-    r"\$?([0-9,]+(?:\.[0-9]{2})?)\s+for\s+([0-9]+)\s+nights?", re.IGNORECASE
+    r"\$?([0-9,]+(?:\.[0-9]{2})?)\s+for\s+([0-9]+)\s+nights?(?:,\s*originally\s+\$?([0-9,]+(?:\.[0-9]{2})?))?",
+    re.IGNORECASE,
 )
 
 UNAVAILABLE_PHRASES = [
@@ -197,6 +200,17 @@ def extract_metadata_from_json(response: Response) -> Dict[str, Any]:
             except (KeyError, TypeError):
                 pass
 
+        # ── DOM fallback: host_name ───────────────────────────────────────────
+        # If JSON-path extraction didn't find the host name, look for the
+        # "Go to Host full profile" anchor whose href contains the host user ID.
+        # We store the profile URL in meta_data so it can be used for a future
+        # lookup even if the display name isn't accessible without a second request.
+        if not metadata.get('host_name'):
+            host_anchor = response.css('a[aria-label="Go to Host full profile"]::attr(href)').get()
+            if host_anchor:
+                metadata['host_profile_url'] = host_anchor.split('?')[0]  # strip query params
+                logger.info(f"[Metadata] host_name not found in JSON; host profile URL captured: {metadata['host_profile_url']}")
+
         return metadata
     except Exception as e:
         logger.warning(f"Metadata extraction failed: {e}")
@@ -283,22 +297,45 @@ def extract_pricing(response: Response) -> Dict[str, Any]:
                 "meta_data": {"state": "unavailable", "matched_phrase": phrase},
             }
 
-    # 2. Regex: Accessible "$X for Y nights" pattern in sidebar text
+    # 2. Regex: Accessible "$X for Y nights" (plain or discounted) pattern.
+    # PRICE_PATTERN group layout:
+    #   Group 1 = charged total (discounted price when a discount is applied)
+    #   Group 2 = number of nights
+    #   Group 3 = original total (present only when a discount is active)
     match = PRICE_PATTERN.search(text_content)
     if match:
-        raw_total_str, parsed_nights_str = match.groups()
-        raw_total = float(raw_total_str.replace(",", ""))
-        parsed_nights = int(parsed_nights_str)
-        nightly_rate = raw_total / parsed_nights if parsed_nights > 0 else None
-        logger.info(f"[Pricing] Regex match: total={raw_total}, nights={parsed_nights}")
+        charged_str, nights_str, original_str = match.groups()
+        charged_total = float(charged_str.replace(",", ""))
+        parsed_nights = int(nights_str)
+        nightly_rate = charged_total / parsed_nights if parsed_nights > 0 else None
+
+        meta: Dict[str, Any] = {
+            "raw_total": charged_total,
+            "parsed_nights": parsed_nights,
+            "extraction_method": "regex",
+        }
+
+        if original_str:
+            # A discount is in effect — record full breakdown in meta_data
+            original_total = float(original_str.replace(",", ""))
+            original_nightly = original_total / parsed_nights if parsed_nights > 0 else None
+            discount_amount = original_total - charged_total
+            meta["is_discounted"] = True
+            meta["original_total"] = original_total
+            meta["original_nightly_rate"] = original_nightly
+            meta["discount_amount"] = discount_amount
+            logger.info(
+                f"[Pricing] Discounted regex match: charged={charged_total}, "
+                f"original={original_total}, nights={parsed_nights}"
+            )
+        else:
+            meta["is_discounted"] = False
+            logger.info(f"[Pricing] Regex match: total={charged_total}, nights={parsed_nights}")
+
         return {
             "is_available": True,
             "nightly_rate": nightly_rate,
-            "meta_data": {
-                "raw_total": raw_total,
-                "parsed_nights": parsed_nights,
-                "extraction_method": "regex",
-            },
+            "meta_data": meta,
         }
 
     # 3. Tier 3: LLM fallback — send only the sidebar region (compact, focused)
