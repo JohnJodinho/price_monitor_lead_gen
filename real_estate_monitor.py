@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import update
 
 from db import AsyncSessionLocal
 from config import get_settings
@@ -63,6 +64,34 @@ async def run_real_estate_monitor():
 
     with open("properties_to_track.json", "r", encoding="utf-8") as f:
         properties_input = json.load(f)
+
+    # ── UPDATE IS_ACTIVE STATE ────────────────────────────────────────────────
+    active_urls = []
+    for item in properties_input:
+        platform = item.get("platform", "airbnb")
+        if platform == "vrbo":
+            try:
+                room_id = extract_vrbo_property_id(item["url"])
+                active_urls.append(f"https://www.vrbo.com/{room_id}")
+            except Exception:
+                pass
+        else:
+            try:
+                room_id = extract_room_id(item["url"])
+                active_urls.append(f"https://www.airbnb.com/rooms/{room_id}")
+            except Exception:
+                pass
+
+    if active_urls:
+        async with AsyncSessionLocal() as session:
+            stmt = (
+                update(Property)
+                .where(Property.url.notin_(active_urls))
+                .values(is_active=False)
+            )
+            await session.execute(stmt)
+            await session.commit()
+    # ──────────────────────────────────────────────────────────────────────────
 
     # Interleave Airbnb and Vrbo properties so processing alternates
     def interleave(list_a, list_b):
@@ -163,6 +192,7 @@ async def run_real_estate_monitor():
                     platform=platform,
                     url=base_url,
                     market=item.get("market", "Unknown"),
+                    is_active=True,
                 )
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["url"],
@@ -171,6 +201,7 @@ async def run_real_estate_monitor():
                         "platform": stmt.excluded.platform,
                         "property_key": stmt.excluded.property_key,
                         "market": stmt.excluded.market,
+                        "is_active": True,
                     },
                 ).returning(Property.id)
                 res = await session.execute(stmt)
