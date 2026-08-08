@@ -16,9 +16,12 @@ from sqlalchemy import (
     Uuid,
     func,
     Enum,
+    Column,
+    Index,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
+from pgvector.sqlalchemy import Vector
 
 from db import Base
 
@@ -295,3 +298,22 @@ class Client(CustomBase):
 
     def __repr__(self):
         return f"<Client(company_name={self.company_name}, contact_email={self.contact_email}, vertical={self.vertical})>"
+
+class REKnowledgeBase(Base):
+    __tablename__ = "re_knowledge_base"
+
+    id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    section_title = Column(String(255), nullable=False)
+    chunk_content = Column(Text, nullable=False)
+    metadata_ = Column("metadata", JSONB, server_default="{}")
+    embedding = Column(Vector(384))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "idx_re_kb_embedding",
+            embedding,
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"}
+        ),
+    )

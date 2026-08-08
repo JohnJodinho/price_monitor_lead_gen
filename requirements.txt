@@ -72,3 +72,4 @@ w3lib==2.4.1
 watchfiles==1.2.0
 websockets==16.1
 appwrite
+pgvector
