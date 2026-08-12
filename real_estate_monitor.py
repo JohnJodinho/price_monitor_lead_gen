@@ -71,11 +71,20 @@ async def capture_stitched_screenshot(page):
         scroll_step = viewport_height - 50
         scroll_pos = 0
 
-        while scroll_pos < total_height:
+        max_scrolls = 30
+        scroll_count = 0
+        last_scroll = -1
+
+        while scroll_pos < total_height and scroll_count < max_scrolls:
             await page.evaluate(f"window.scrollTo(0, {scroll_pos})")
             await page.wait_for_timeout(400)
+            actual_scroll = await page.evaluate("window.pageYOffset")
+            if actual_scroll == last_scroll:
+                break
+            last_scroll = actual_scroll
             scroll_pos += scroll_step
             total_height = await page.evaluate("document.body.scrollHeight")
+            scroll_count += 1
             
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         await page.wait_for_timeout(2000)
@@ -86,14 +95,21 @@ async def capture_stitched_screenshot(page):
         total_height = await page.evaluate("document.body.scrollHeight")
         chunks = []
         scroll_pos = 0
+        last_scroll = -1
+        scroll_count = 0
 
-        while True:
+        while scroll_count < max_scrolls:
             await page.evaluate(f"window.scrollTo(0, {scroll_pos})")
             await page.wait_for_timeout(350)
+            
+            actual_scroll = await page.evaluate("window.pageYOffset")
             raw_png = await page.screenshot(type="png", animations="disabled")
             img = Image.open(io.BytesIO(raw_png))
             
-            actual_scroll = await page.evaluate("window.pageYOffset")
+            if actual_scroll == last_scroll and scroll_count > 0:
+                # We've stopped scrolling (hit bottom or unscrollable).
+                break
+            
             remaining = total_height - actual_scroll
             
             if remaining <= viewport_height:
@@ -106,6 +122,12 @@ async def capture_stitched_screenshot(page):
             else:
                 chunks.append(img)
                 scroll_pos += scroll_step
+                last_scroll = actual_scroll
+                scroll_count += 1
+
+        if not chunks:
+            raw_png = await page.screenshot(type="jpeg", animations="disabled")
+            return raw_png
 
         total_stitched_height = sum(chunk.height for chunk in chunks)
         canvas = Image.new("RGB", (int(viewport_width), int(total_stitched_height)))
