@@ -1,9 +1,11 @@
 import asyncio
+import io
 import json
 import logging
 import random
 import itertools
 import re
+from PIL import Image
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -38,11 +40,17 @@ def extract_room_id(url: str) -> str:
     return match.group(1)
 
 
-def build_scrape_url(
+def build_airbnb_scrape_url(
     room_id: str, check_in: str, check_out: str, adults: int = 1
 ) -> str:
     base = f"https://www.airbnb.com/rooms/{room_id}"
-    params = {"check_in": check_in, "check_out": check_out, "adults": adults}
+    params = {
+        "check_in": check_in, 
+        "check_out": check_out, 
+        "adults": adults,
+        "locale": "en",
+        "display_currency": "USD"
+    }
     return f"{base}?{urlencode(params)}"
 
 
@@ -54,13 +62,75 @@ def build_vrbo_scrape_url(
     return f"{base}?{urlencode(params)}"
 
 
+async def capture_stitched_screenshot(page):
+    try:
+        total_height = await page.evaluate("document.body.scrollHeight")
+        viewport_size = page.viewport_size
+        viewport_height = viewport_size["height"] if viewport_size else 900
+        viewport_width = viewport_size["width"] if viewport_size else 1440
+        scroll_step = viewport_height - 50
+        scroll_pos = 0
+
+        while scroll_pos < total_height:
+            await page.evaluate(f"window.scrollTo(0, {scroll_pos})")
+            await page.wait_for_timeout(400)
+            scroll_pos += scroll_step
+            total_height = await page.evaluate("document.body.scrollHeight")
+            
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(2000)
+
+        await page.evaluate("window.scrollTo(0, 0)")
+        await page.wait_for_timeout(1000)
+        
+        total_height = await page.evaluate("document.body.scrollHeight")
+        chunks = []
+        scroll_pos = 0
+
+        while True:
+            await page.evaluate(f"window.scrollTo(0, {scroll_pos})")
+            await page.wait_for_timeout(350)
+            raw_png = await page.screenshot(type="png", animations="disabled")
+            img = Image.open(io.BytesIO(raw_png))
+            
+            actual_scroll = await page.evaluate("window.pageYOffset")
+            remaining = total_height - actual_scroll
+            
+            if remaining <= viewport_height:
+                if chunks:
+                    overlap = viewport_height - remaining
+                    if overlap > 0:
+                        img = img.crop((0, int(overlap), int(viewport_width), int(viewport_height)))
+                chunks.append(img)
+                break
+            else:
+                chunks.append(img)
+                scroll_pos += scroll_step
+
+        total_stitched_height = sum(chunk.height for chunk in chunks)
+        canvas = Image.new("RGB", (int(viewport_width), int(total_stitched_height)))
+        y_offset = 0
+        for chunk in chunks:
+            canvas.paste(chunk, (0, int(y_offset)))
+            y_offset += chunk.height
+
+        out_bytes = io.BytesIO()
+        canvas.save(out_bytes, format="JPEG")
+        return out_bytes.getvalue()
+    except Exception as e:
+        logger.error(f"Screenshot stitching failed: {e}")
+        return None
+
+
 async def run_real_estate_monitor():
     logger.info("Starting Real Estate Monitor run")
 
     settings = get_settings()
     vrbo_proxies = []
     if settings.VRBO_PROXIES:
-        vrbo_proxies = [p.strip() for p in settings.VRBO_PROXIES.split(",") if p.strip()]
+        vrbo_proxies = [
+            p.strip() for p in settings.VRBO_PROXIES.split(",") if p.strip()
+        ]
 
     with open("properties_to_track.json", "r", encoding="utf-8") as f:
         properties_input = json.load(f)
@@ -149,6 +219,9 @@ async def run_real_estate_monitor():
     current_vrbo_proxy = None
     proxy_metrics = {p: {"success": 0, "failed": 0} for p in vrbo_proxies}
 
+    airbnb_consecutive_blocks = 0
+    vrbo_consecutive_blocks = 0
+
     file_logger = RunLogger(
         job_type=RunJobType.REAL_ESTATE_MONITOR.value,
         platform="real_estate_all",
@@ -182,7 +255,9 @@ async def run_real_estate_monitor():
             else:
                 room_id = extract_room_id(item["url"])
                 base_url = f"https://www.airbnb.com/rooms/{room_id}"
-                scrape_url = build_scrape_url(room_id, check_in_str, check_out_str)
+                scrape_url = build_airbnb_scrape_url(
+                    room_id, check_in_str, check_out_str
+                )
 
             # Idempotent upsert on url (unique key).
             async with AsyncSessionLocal() as session:
@@ -208,15 +283,19 @@ async def run_real_estate_monitor():
                 property_id = res.scalar()
                 await session.commit()
 
-            max_retries = 1 if platform == "vrbo" else 0
-            
+            max_retries = 1
+
             for attempt in range(max_retries + 1):
                 try:
-                    logger.info(f"Fetching URL (Attempt {attempt+1}): {scrape_url}")
+                    logger.info(f"Fetching URL (Attempt {attempt + 1}): {scrape_url}")
 
                     # Platform-adaptive delay — Vrbo is more hostile, needs longer gaps
                     if attempt == 0:
-                        sleep_sec = random.randint(20, 45) if platform == "vrbo" else random.randint(5, 15)
+                        sleep_sec = (
+                            random.randint(20, 45)
+                            if platform == "vrbo"
+                            else random.randint(5, 15)
+                        )
                     else:
                         # Retry after block: shorter gap, different proxy/fingerprint handles spacing
                         sleep_sec = random.randint(3, 8)
@@ -230,6 +309,15 @@ async def run_real_estate_monitor():
                     # Randomises timezone, locale, UA, Client Hints, screen/viewport,
                     # hardware concurrency and deviceMemory independently per fetch.
                     profile = build_fetch_profile()
+                    
+                    if attempt > 0:
+                        logger.warning(f"Attempt {attempt+1}: Dropping spoofed UA and forcing stealth flags to evade block.")
+                        profile.user_agent = None
+                        if not profile.additional_args:
+                            profile.additional_args = []
+                        if "--disable-blink-features=AutomationControlled" not in profile.additional_args:
+                            profile.additional_args.append("--disable-blink-features=AutomationControlled")
+
                     logger.info(
                         f"Fingerprint: tz={profile.timezone_id} locale={profile.locale} "
                         f"screen={profile.screen_w}x{profile.screen_h} "
@@ -243,24 +331,24 @@ async def run_real_estate_monitor():
                             pass
                         try:
                             html_bytes_ref[0] = (await page.content()).encode("utf-8")
-                            screenshot_bytes_ref[0] = await page.screenshot(type="jpeg", full_page=True)
+                            screenshot_bytes_ref[0] = await capture_stitched_screenshot(page)
                         except Exception as e:
                             logger.error(f"Failed to capture artifacts: {e}")
 
                     kwargs = {
-                        "headless":       True,
-                        "block_webrtc":   True,
-                        "google_search":  True,
-                        "hide_canvas":    True,
+                        "headless": True,
+                        "block_webrtc": True,
+                        "google_search": True,
+                        "hide_canvas": True,
                         "dns_over_https": True,
-                        "timeout":        90_000,
-                        "page_action":    capture_artifacts,
-                        "page_setup":     profile.page_setup_fn,
+                        "timeout": 90_000,
+                        "page_action": capture_artifacts,
+                        "page_setup": profile.page_setup_fn,
                         # Fingerprint randomisation
-                        "timezone_id":    profile.timezone_id,
-                        "locale":         profile.locale,
-                        "useragent":      profile.user_agent,
-                        "extra_headers":  profile.extra_headers,
+                        "timezone_id": profile.timezone_id,
+                        "locale": profile.locale,
+                        "useragent": profile.user_agent,
+                        "extra_headers": profile.extra_headers,
                         "additional_args": profile.additional_args,
                     }
 
@@ -272,7 +360,9 @@ async def run_real_estate_monitor():
                             kwargs["proxy"] = current_vrbo_proxy
                     else:
                         kwargs["network_idle"] = True
-                        kwargs["wait_selector"] = '[data-plugin-in-point-id="BOOK_IT_SIDEBAR"]'
+                        kwargs["wait_selector"] = (
+                            '[data-plugin-in-point-id="BOOK_IT_SIDEBAR"]'
+                        )
                         kwargs["wait_selector_state"] = "attached"
                         kwargs["wait"] = 3000
 
@@ -288,57 +378,121 @@ async def run_real_estate_monitor():
                         errors.append(f"Network failure: {scrape_url}")
                         break
 
-                    if response.status in (429, 403):
+                    if response.status in (429, 403, 503):
                         logger.error(f"BLOCKED ({response.status}) on {scrape_url}")
                         is_anomaly = True
-                        
-                        if platform == "vrbo" and not vrbo_proxy_mode and vrbo_proxies:
-                            logger.warning("First Vrbo block detected. Switching to proxy mode.")
-                            vrbo_proxy_mode = True
-                            current_vrbo_proxy = random.choice(vrbo_proxies)
-                            # Let it retry this property with a proxy
-                            continue
-                        elif platform == "vrbo" and vrbo_proxy_mode and current_vrbo_proxy:
-                            # Proxy failed
-                            proxy_metrics[current_vrbo_proxy]["failed"] += 1
-                            current_vrbo_proxy = random.choice(vrbo_proxies) # pick another for the next prop
-                            vrbo_blocked = True # Blocked even on proxy, skip rest
-                        else:
-                            airbnb_blocked = True
 
+                        html_text = ""
+                        try:
+                            html_text = await response.text()
+                        except Exception:
+                            pass
+                            
+                        is_503_maintenance = False
+                        if "503 Service Unavailable" in html_text or response.status == 503:
+                            logger.warning(f"Detected temporary 503 maintenance page for {scrape_url}. Retrying without marking as bot block.")
+                            is_503_maintenance = True
+
+                        if not is_503_maintenance:
+                            if platform == "vrbo" and not vrbo_proxy_mode and vrbo_proxies:
+                                logger.warning(
+                                    "First Vrbo block detected. Switching to proxy mode."
+                                )
+                                vrbo_proxy_mode = True
+                                current_vrbo_proxy = random.choice(vrbo_proxies)
+                                # Let it retry this property with a proxy
+                                continue
+                            elif (
+                                platform == "vrbo"
+                                and vrbo_proxy_mode
+                                and current_vrbo_proxy
+                            ):
+                                # Proxy failed
+                                proxy_metrics[current_vrbo_proxy]["failed"] += 1
+                                current_vrbo_proxy = random.choice(
+                                    vrbo_proxies
+                                )  # pick another for the next prop
+                                
+                        if attempt < max_retries:
+                            continue
+                            
                         errors.append(f"{platform.capitalize()} Blocked: {scrape_url}")
                         total_failed += 1
+                        
                         if platform == "vrbo":
                             blocked_count += 1
-                        
-                        file_logger.log_item({"url": scrape_url, "status": "blocked", "error": f"HTTP {response.status}"})
+                            if not is_503_maintenance:
+                                vrbo_consecutive_blocks += 1
+                                if vrbo_consecutive_blocks >= 5:
+                                    logger.error("5 consecutive Vrbo blocks! Skipping entire Vrbo platform.")
+                                    vrbo_blocked = True
+                        else:
+                            if not is_503_maintenance:
+                                airbnb_consecutive_blocks += 1
+                                if airbnb_consecutive_blocks >= 5:
+                                    logger.error("5 consecutive Airbnb blocks! Skipping entire Airbnb platform.")
+                                    airbnb_blocked = True
+
+                        file_logger.log_item(
+                            {
+                                "url": scrape_url,
+                                "status": "blocked",
+                                "error": f"HTTP {response.status}",
+                            }
+                        )
                         break
 
                     if response.status == 404:
                         logger.warning(f"NOT FOUND (404) on {scrape_url}. Skipping.")
                         errors.append(f"Not Found (404): {scrape_url}")
                         total_failed += 1
-                        file_logger.log_item({"url": scrape_url, "status": "not_found", "error": "HTTP 404"})
+                        file_logger.log_item(
+                            {
+                                "url": scrape_url,
+                                "status": "not_found",
+                                "error": "HTTP 404",
+                            }
+                        )
 
                         async with AsyncSessionLocal() as session:
-                            upd = Property.__table__.update().where(Property.id == property_id).values(consecutive_404s=Property.consecutive_404s + 1)
+                            upd = (
+                                Property.__table__.update()
+                                .where(Property.id == property_id)
+                                .values(consecutive_404s=Property.consecutive_404s + 1)
+                            )
                             await session.execute(upd)
                             await session.commit()
                         break
 
                     if response.status != 200:
-                        logger.warning(f"HTTP {response.status} on {scrape_url}. Skipping.")
+                        logger.warning(
+                            f"HTTP {response.status} on {scrape_url}. Skipping."
+                        )
                         errors.append(f"HTTP {response.status}: {scrape_url}")
                         total_failed += 1
-                        file_logger.log_item({"url": scrape_url, "status": "failed", "error": f"HTTP {response.status}"})
+                        file_logger.log_item(
+                            {
+                                "url": scrape_url,
+                                "status": "failed",
+                                "error": f"HTTP {response.status}",
+                            }
+                        )
                         break
 
                     # Successful fetch
-                    if platform == "vrbo" and vrbo_proxy_mode and current_vrbo_proxy:
-                        proxy_metrics[current_vrbo_proxy]["success"] += 1
+                    if platform == "vrbo":
+                        vrbo_consecutive_blocks = 0
+                        if vrbo_proxy_mode and current_vrbo_proxy:
+                            proxy_metrics[current_vrbo_proxy]["success"] += 1
+                    else:
+                        airbnb_consecutive_blocks = 0
 
                     async with AsyncSessionLocal() as session:
-                        upd = Property.__table__.update().where(Property.id == property_id).values(consecutive_404s=0)
+                        upd = (
+                            Property.__table__.update()
+                            .where(Property.id == property_id)
+                            .values(consecutive_404s=0)
+                        )
                         await session.execute(upd)
                         await session.commit()
 
@@ -346,36 +500,57 @@ async def run_real_estate_monitor():
                         metadata = extract_vrbo_metadata(response)
                     else:
                         metadata = extract_metadata_from_json(response)
-                    
-                    non_null_metadata = {k: v for k, v in metadata.items() if v is not None}
+
+                    non_null_metadata = {
+                        k: v for k, v in metadata.items() if v is not None
+                    }
                     if non_null_metadata:
-                        logger.info(f"Updating metadata for {room_id}: {non_null_metadata}")
+                        logger.info(
+                            f"Updating metadata for {room_id}: {non_null_metadata}"
+                        )
                         async with AsyncSessionLocal() as session:
-                            upd_stmt = Property.__table__.update().where(Property.id == property_id).values(**non_null_metadata)
+                            upd_stmt = (
+                                Property.__table__.update()
+                                .where(Property.id == property_id)
+                                .values(**non_null_metadata)
+                            )
                             await session.execute(upd_stmt)
                             await session.commit()
                     else:
-                        logger.warning(f"No metadata extracted for {room_id} this run (all fields None)")
+                        logger.warning(
+                            f"No metadata extracted for {room_id} this run (all fields None)"
+                        )
 
                     if platform == "vrbo":
                         pricing_data = extract_vrbo_pricing(response)
 
-                        if pricing_data["meta_data"].get("extraction_method") == "blocked":
+                        if (
+                            pricing_data["meta_data"].get("extraction_method")
+                            == "blocked"
+                        ):
                             is_anomaly = True
                             if not vrbo_proxy_mode and vrbo_proxies:
-                                logger.warning("DataDome Block detected. Switching to proxy mode.")
+                                logger.warning(
+                                    "DataDome Block detected. Switching to proxy mode."
+                                )
                                 vrbo_proxy_mode = True
                                 current_vrbo_proxy = random.choice(vrbo_proxies)
-                                continue # retry loop
+                                continue  # retry loop
                             elif vrbo_proxy_mode:
                                 proxy_metrics[current_vrbo_proxy]["failed"] += 1
                                 vrbo_blocked = True
-                            
+
                             logger.error(f"DATADOME BLOCK DETECTED on {scrape_url}")
                             errors.append(f"Vrbo Blocked: {scrape_url}")
                             total_failed += 1
                             blocked_count += 1
-                            file_logger.log_item({"url": scrape_url, "status": "blocked", "error": "DataDome block"})
+                            file_logger.log_item(
+                                {
+                                    "url": scrape_url,
+                                    "status": "blocked",
+                                    "error": "DataDome block",
+                                }
+                            )
                             break
                     else:
                         pricing_data = extract_pricing(response)
@@ -402,13 +577,16 @@ async def run_real_estate_monitor():
                         history = RateHistory(
                             property_id=property_id,
                             stay_date=datetime(
-                                check_in.year, check_in.month, check_in.day, tzinfo=ZoneInfo("UTC")
+                                check_in.year,
+                                check_in.month,
+                                check_in.day,
+                                tzinfo=ZoneInfo("UTC"),
                             ),
                             nightly_rate=pricing_data.get("nightly_rate"),
                             is_available=pricing_data.get("is_available"),
                             meta_data=pricing_data.get("meta_data", {}),
                             dlq_html_url=dlq_html_url,
-                            dlq_screenshot_url=dlq_screenshot_url
+                            dlq_screenshot_url=dlq_screenshot_url,
                         )
                         session.add(history)
                         await session.commit()
@@ -422,17 +600,22 @@ async def run_real_estate_monitor():
                         }
                     )
                     total_succeeded += 1
-                    
+
                     # Successfully fetched and processed, no need for retry
                     break
 
                 except Exception as e:
-                    logger.error(f"Error processing {property_label} on attempt {attempt+1}: {e}", exc_info=True)
+                    logger.error(
+                        f"Error processing {property_label} on attempt {attempt + 1}: {e}",
+                        exc_info=True,
+                    )
                     if attempt < max_retries:
                         continue
                     errors.append(f"{property_label}: {e}")
                     total_failed += 1
-                    file_logger.log_item({"url": item.get("url"), "status": "failed", "error": str(e)})
+                    file_logger.log_item(
+                        {"url": item.get("url"), "status": "failed", "error": str(e)}
+                    )
 
     except Exception as e:
         logger.error(f"Fatal error running real estate monitor: {e}", exc_info=True)
@@ -442,7 +625,11 @@ async def run_real_estate_monitor():
         file_logger.close()
 
         async with AsyncSessionLocal() as session:
-            is_fatal = any(e.startswith("Fatal run error") for e in errors) if errors else False
+            is_fatal = (
+                any(e.startswith("Fatal run error") for e in errors)
+                if errors
+                else False
+            )
             final_status = RunStatus.FAILED if is_fatal else RunStatus.SUCCESS
             upd = (
                 ScrapeRun.__table__.update()
@@ -458,7 +645,7 @@ async def run_real_estate_monitor():
                     meta_data={
                         "tier3_escalation_count": tier3_escalation_count,
                         "blocked_count": blocked_count,
-                        "proxy_metrics": proxy_metrics
+                        "proxy_metrics": proxy_metrics,
                     },
                 )
             )

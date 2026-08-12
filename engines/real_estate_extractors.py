@@ -201,10 +201,14 @@ def extract_metadata_from_json(response: Response) -> Dict[str, Any]:
                 pass
 
         # ── DOM fallback: host_name ───────────────────────────────────────────
-        # If JSON-path extraction didn't find the host name, look for the
-        # "Go to Host full profile" anchor whose href contains the host user ID.
-        # We store the profile URL in meta_data so it can be used for a future
-        # lookup even if the display name isn't accessible without a second request.
+        # If JSON-path extraction didn't find the host name, use XPath to find the "Hosted by " div.
+        if not metadata.get('host_name'):
+            host_text = response.xpath('//div[starts-with(normalize-space(text()), "Hosted by ")]/text()').get()
+            if host_text:
+                metadata['host_name'] = host_text.replace("Hosted by ", "").strip()
+                logger.info(f"[Metadata] host_name extracted via XPath: {metadata['host_name']}")
+
+        # Final fallback: Look for profile URL if we still don't have a name
         if not metadata.get('host_name'):
             host_anchor = response.css('a[aria-label="Go to Host full profile"]::attr(href)').get()
             if host_anchor:
@@ -260,15 +264,20 @@ def extract_pricing(response: Response) -> Dict[str, Any]:
     text so Tier 3 never receives 40K chars of nav/footer noise.
     """
     # ── Region extraction ────────────────────────────────────────────────────
-    # response.css() returns a Selectors collection; use *::text to pull all
-    # text nodes within the sidebar element rather than calling instance
-    # methods that only exist on a single Selector object.
+    # Extract both text nodes AND aria-label attributes to ensure discounted prices
+    # (which are often stored in aria-labels for screen readers) are captured.
     sidebar_texts = response.css(
         '[data-plugin-in-point-id="BOOK_IT_SIDEBAR"] *::text'
     ).getall()
+    
+    sidebar_arias = response.css(
+        '[data-plugin-in-point-id="BOOK_IT_SIDEBAR"] [aria-label]::attr(aria-label)'
+    ).getall()
 
-    if sidebar_texts:
-        region_text = " ".join(t.strip() for t in sidebar_texts if t.strip())
+    if sidebar_texts or sidebar_arias:
+        # Prepend arias so they match regex first
+        combined = sidebar_arias + sidebar_texts
+        region_text = " ".join(t.strip() for t in combined if t.strip())
         logger.info(
             f"[Pricing] Sidebar element found. "
             f"Region text length={len(region_text)} chars."

@@ -73,3 +73,4 @@ watchfiles==1.2.0
 websockets==16.1
 appwrite
 pgvector
+Pillow==12.3.0
