@@ -1,0 +1,30 @@
+name: Ping Backend Keep Alive
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'  # Runs every 12 hours (00:00 and 12:00 UTC)
+  workflow_dispatch:        # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  ping-backend:
+    name: Ping HF Backend Health Endpoint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send GET Health Ping
+        run: |
+          echo "Sending keep-alive ping to Hugging Face backend..."
+          RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}\n" --retry 3 --retry-delay 5 "https://johnalbarkaibrahim-sentimentscope.hf.space/api/v1/health")
+          
+          BODY=$(echo "$RESPONSE" | sed -e '$d')
+          STATUS=$(echo "$RESPONSE" | tail -n 1 | cut -d':' -f2)
+          
+          echo "Response Body: $BODY"
+          echo "HTTP Status Code: $STATUS"
+          
+          if [ "$STATUS" -eq 200 ]; then
+            echo "✅ Backend is active and healthy!"
+          else
+            echo "❌ Backend health check failed with status $STATUS"
+            exit 1
+          fi
