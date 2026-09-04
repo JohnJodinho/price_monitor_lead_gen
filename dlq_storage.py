@@ -44,7 +44,7 @@ def _upload_file_sync(bucket_id: str, file_name: str, file_bytes: bytes) -> str:
     
     return view_url
 
-async def upload_dlq_artifacts(html_bytes: bytes, screenshot_bytes: bytes, property_id: str) -> Tuple[str, str]:
+async def upload_dlq_artifacts(html_bytes: bytes, screenshot_bytes: bytes = None, property_id: str = "") -> Tuple[str, str]:
     """
     Concurrently upload HTML and screenshot bytes to Appwrite.
     
@@ -58,10 +58,13 @@ async def upload_dlq_artifacts(html_bytes: bytes, screenshot_bytes: bytes, prope
     screenshot_filename = f"block_{property_id}.jpg"
     
     try:
-        html_url, screenshot_url = await asyncio.gather(
-            asyncio.to_thread(_upload_file_sync, bucket_id, html_filename, html_bytes),
-            asyncio.to_thread(_upload_file_sync, bucket_id, screenshot_filename, screenshot_bytes)
-        )
+        tasks = [asyncio.to_thread(_upload_file_sync, bucket_id, html_filename, html_bytes)]
+        if screenshot_bytes:
+            tasks.append(asyncio.to_thread(_upload_file_sync, bucket_id, screenshot_filename, screenshot_bytes))
+            
+        results = await asyncio.gather(*tasks)
+        html_url = results[0]
+        screenshot_url = results[1] if len(results) > 1 else None
         logger.info(f"Successfully uploaded DLQ artifacts for {property_id}")
         return html_url, screenshot_url
     except Exception as e:

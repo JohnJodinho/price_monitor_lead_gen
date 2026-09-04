@@ -62,22 +62,20 @@ def build_vrbo_scrape_url(
     return f"{base}?{urlencode(params)}"
 
 
-async def capture_stitched_screenshot(page):
+async def scroll_entire_page(page, max_scrolls=30):
     try:
         total_height = await page.evaluate("document.body.scrollHeight")
         viewport_size = page.viewport_size
         viewport_height = viewport_size["height"] if viewport_size else 900
-        viewport_width = viewport_size["width"] if viewport_size else 1440
         scroll_step = viewport_height - 50
         scroll_pos = 0
 
-        max_scrolls = 30
         scroll_count = 0
         last_scroll = -1
 
         while scroll_pos < total_height and scroll_count < max_scrolls:
             await page.evaluate(f"window.scrollTo(0, {scroll_pos})")
-            await page.wait_for_timeout(400)
+            await page.wait_for_timeout(300)
             actual_scroll = await page.evaluate("window.pageYOffset")
             if actual_scroll == last_scroll:
                 break
@@ -87,12 +85,21 @@ async def capture_stitched_screenshot(page):
             scroll_count += 1
             
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(1000)
 
         await page.evaluate("window.scrollTo(0, 0)")
-        await page.wait_for_timeout(1000)
-        
+        await page.wait_for_timeout(500)
+    except Exception as e:
+        logger.warning(f"Page scrolling failed: {e}")
+
+
+async def capture_stitched_screenshot(page, max_scrolls=30):
+    try:
         total_height = await page.evaluate("document.body.scrollHeight")
+        viewport_size = page.viewport_size
+        viewport_height = viewport_size["height"] if viewport_size else 900
+        viewport_width = viewport_size["width"] if viewport_size else 1440
+        scroll_step = viewport_height - 50
         chunks = []
         scroll_pos = 0
         last_scroll = -1
@@ -100,7 +107,7 @@ async def capture_stitched_screenshot(page):
 
         while scroll_count < max_scrolls:
             await page.evaluate(f"window.scrollTo(0, {scroll_pos})")
-            await page.wait_for_timeout(350)
+            await page.wait_for_timeout(300)
             
             actual_scroll = await page.evaluate("window.pageYOffset")
             raw_png = await page.screenshot(type="png", animations="disabled")
@@ -160,6 +167,8 @@ async def run_real_estate_monitor():
     # ── UPDATE IS_ACTIVE STATE ────────────────────────────────────────────────
     active_urls = []
     for item in properties_input:
+        if not item.get("to_track", True):
+            continue
         platform = item.get("platform", "airbnb")
         if platform == "vrbo":
             try:
@@ -196,10 +205,10 @@ async def run_real_estate_monitor():
         return merged
 
     airbnb_properties = [
-        p for p in properties_input if p.get("platform", "airbnb") == "airbnb"
+        p for p in properties_input if p.get("platform", "airbnb") == "airbnb" and p.get("to_track", True)
     ]
     vrbo_properties = [
-        p for p in properties_input if p.get("platform", "airbnb") == "vrbo"
+        p for p in properties_input if p.get("platform", "airbnb") == "vrbo" and p.get("to_track", True)
     ]
     properties_input = interleave(airbnb_properties, vrbo_properties)
 
@@ -351,9 +360,37 @@ async def run_real_estate_monitor():
                             await page.wait_for_load_state("networkidle", timeout=5000)
                         except:
                             pass
+
+                        # Always do the scrolling (triggers dynamic loading, maps, reviews, pricing elements)
+                        await scroll_entire_page(page)
+
                         try:
-                            html_bytes_ref[0] = (await page.content()).encode("utf-8")
-                            screenshot_bytes_ref[0] = await capture_stitched_screenshot(page)
+                            content = await page.content()
+                            html_bytes_ref[0] = content.encode("utf-8")
+
+                            # Check if the property failed / was blocked
+                            content_lower = content.lower()
+                            block_signals = [
+                                "access denied", "pardon our interruption", "datadome",
+                                "captcha", "security check", "challenge", "robot or human",
+                                "503 service unavailable", "temporarily blocked"
+                            ]
+                            is_page_failure = any(sig in content_lower for sig in block_signals)
+
+                            if platform == "airbnb":
+                                sidebar_count = await page.locator('[data-plugin-in-point-id="BOOK_IT_SIDEBAR"]').count()
+                                if sidebar_count == 0:
+                                    is_page_failure = True
+                            elif platform == "vrbo":
+                                if "datadome" in content_lower or "pardon our interruption" in content_lower:
+                                    is_page_failure = True
+
+                            # Only capture stitched screenshots for failed properties
+                            if is_page_failure:
+                                logger.warning(f"Failure / block detected on {scrape_url}; capturing stitched screenshot.")
+                                screenshot_bytes_ref[0] = await capture_stitched_screenshot(page)
+                            else:
+                                screenshot_bytes_ref[0] = None
                         except Exception as e:
                             logger.error(f"Failed to capture artifacts: {e}")
 
@@ -582,7 +619,7 @@ async def run_real_estate_monitor():
                         tier3_escalation_count += 1
 
                     dlq_html_url, dlq_screenshot_url = None, None
-                    if is_anomaly and html_bytes_ref[0] and screenshot_bytes_ref[0]:
+                    if is_anomaly and html_bytes_ref[0]:
                         dlq_html_url, dlq_screenshot_url = await upload_dlq_artifacts(
                             html_bytes_ref[0], screenshot_bytes_ref[0], str(property_id)
                         )
