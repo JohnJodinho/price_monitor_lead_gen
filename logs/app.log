@@ -1,0 +1,8 @@
+2026-09-04 14:36:31,689 | services.agent_loop | INFO | [router] openai/gpt-oss-20b -> PATH_A (categories=['MARKET']): User requests live market performance data for Miami properties tracked this week.
+2026-09-04 14:36:32,797 | services.agent_loop | INFO | [process_chat] discovered 5 tools for classification=PATH_A categories=['MARKET']
+2026-09-04 14:36:34,545 | services.agent_loop | INFO | [agent_loop] executing tool=get_market_trend args={'p_days': 7, 'p_market': 'Miami'}
+2026-09-04 14:36:37,188 | services.agent_loop | INFO | [agent_loop] executing tool=get_market_snapshot args={'p_market': 'Miami'}
+2026-09-04 14:36:38,009 | services.agent_loop | INFO | [agent_loop] executing tool=get_market_snapshot args={'p_end_date': '2026-09-03', 'p_market': 'Miami', 'p_start_date': '2026-09-03'}
+2026-09-04 14:37:21,964 | services.agent_loop | INFO | [router] openai/gpt-oss-20b -> PATH_A (categories=['MARKET']): User requests live market performance data for Miami properties tracked this week.
+2026-09-04 14:37:22,278 | services.agent_loop | INFO | [process_chat] discovered 5 tools for classification=PATH_A categories=['MARKET']
+2026-09-04 14:37:23,244 | services.agent_loop | INFO | [agent_loop] executing tool=get_market_trend args={'p_days': 7, 'p_market': 'Miami'}
